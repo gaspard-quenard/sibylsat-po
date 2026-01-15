@@ -1,0 +1,3 @@
+[submodule "Benchmarks/ipc2023-domains"]
+	path = Benchmarks/ipc2023-domains
+	url = git@github.com:ipc2023-htn/ipc2023-domains.git
