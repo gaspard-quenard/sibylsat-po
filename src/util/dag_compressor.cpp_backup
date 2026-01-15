@@ -1,0 +1,488 @@
+#include "util/dag_compressor.h"
+
+#include <vector>
+#include <unordered_map>
+#include <unordered_set>
+#include <map>
+#include <set>
+#include <queue>
+#include <algorithm>
+#include <iostream>
+#include <functional> // For std::function
+#include <vector>     // Included for test output
+#include <map>        // Included for test output
+
+// Comparator for UnifiedNode (using index) to use in std::set (for deterministic iteration)
+struct UnifiedNodeCompare {
+    bool operator()(const UnifiedNode &a, const UnifiedNode &b) const
+    {
+        if (a.method_id != b.method_id)
+        {
+            return a.method_id < b.method_id;
+        }
+        return a.index < b.index; // Compare indices
+    }
+};
+
+// Hash function for pairs of ints (used for compressed edge set)
+struct PairHash {
+    template <class T1, class T2>
+    std::size_t operator() (const std::pair<T1, T2> &pair) const {
+        auto hash1 = std::hash<T1>{}(pair.first);
+        auto hash2 = std::hash<T2>{}(pair.second);
+        return hash1 ^ (hash2 << 1); // Combine hashes
+    }
+};
+
+
+// Helper function to compute reachability using BFS on the original UnifiedNode graph
+void compute_original_reachability(
+    const UnifiedNode& start_node,
+    const std::unordered_map<UnifiedNode, std::unordered_set<UnifiedNode, UnifiedNodeHash>, UnifiedNodeHash>& adj,
+    std::unordered_map<UnifiedNode, std::unordered_set<UnifiedNode, UnifiedNodeHash>, UnifiedNodeHash>& reachable_nodes)
+{
+    std::queue<UnifiedNode> q;
+    std::unordered_set<UnifiedNode, UnifiedNodeHash> visited;
+
+    q.push(start_node);
+    visited.insert(start_node);
+    // reachable_nodes[start_node].insert(start_node); // Include self if needed
+
+    while (!q.empty()) {
+        UnifiedNode current = q.front();
+        q.pop();
+
+        if (adj.count(current)) {
+            for (const auto& neighbor : adj.at(current)) {
+                if (visited.find(neighbor) == visited.end()) {
+                    visited.insert(neighbor);
+                    reachable_nodes[start_node].insert(neighbor); // Record reachability
+                    q.push(neighbor);
+                }
+            }
+        }
+    }
+}
+
+// Helper function to check reachability in the partially built COMPRESSED graph
+bool is_compressed_reachable(
+    int start_node_id,
+    int end_node_id,
+    const std::unordered_map<int, std::unordered_set<int>>& compressed_adj)
+{
+    if (start_node_id == end_node_id) return true; // Node is reachable from itself
+
+    std::queue<int> q;
+    std::unordered_set<int> visited;
+
+    q.push(start_node_id);
+    visited.insert(start_node_id);
+
+    while (!q.empty()) {
+        int current_id = q.front();
+        q.pop();
+
+        if (compressed_adj.count(current_id)) {
+            for (const int neighbor_id : compressed_adj.at(current_id)) {
+                if (neighbor_id == end_node_id) {
+                    return true;
+                }
+                if (visited.find(neighbor_id) == visited.end()) {
+                    visited.insert(neighbor_id);
+                    q.push(neighbor_id);
+                }
+            }
+        }
+    }
+    return false;
+}
+
+
+// Check if node_to_place can be added to target_c_node based on current compressed state
+bool can_fit(
+    const UnifiedNode& node_to_place,
+    const CompressedNode& target_c_node,
+    const std::unordered_map<UnifiedNode, std::unordered_set<UnifiedNode, UnifiedNodeHash>, UnifiedNodeHash>& original_adj,
+    const std::unordered_map<UnifiedNode, std::unordered_set<UnifiedNode, UnifiedNodeHash>, UnifiedNodeHash>& original_rev_adj,
+    const std::unordered_map<UnifiedNode, std::unordered_set<UnifiedNode, UnifiedNodeHash>, UnifiedNodeHash>& original_reachability,
+    const std::unordered_map<UnifiedNode, int, UnifiedNodeHash>& node_to_compressed_id, // Current mapping
+    const std::unordered_map<int, std::unordered_set<int>>& compressed_adj // Current compressed graph adj
+) {
+    // 1. Check if method already exists in the target node
+    if (target_c_node.original_nodes.count(node_to_place.method_id)) {
+        return false;
+    }
+
+    // 2. Check pairwise compatibility with existing nodes in the target
+    for (const auto& pair : target_c_node.original_nodes) {
+        UnifiedNode existing_node = {pair.first, pair.second};
+        // Check mutual reachability in the original graph
+        bool place_reaches_existing = original_reachability.count(node_to_place) && original_reachability.at(node_to_place).count(existing_node);
+        bool existing_reaches_place = original_reachability.count(existing_node) && original_reachability.at(existing_node).count(node_to_place);
+        if (place_reaches_existing || existing_reaches_place) {
+            return false; // Cannot group if ordered originally
+        }
+        // Optional stricter check: Check if grouping implies new orders via successors (might be overly restrictive)
+    }
+
+    // 3. Check Predecessor Constraints (using compressed graph)
+    if (original_rev_adj.count(node_to_place)) {
+        for (const auto& pred_node : original_rev_adj.at(node_to_place)) {
+            // If predecessor has been placed
+            if (node_to_compressed_id.count(pred_node)) {
+                int pred_c_id = node_to_compressed_id.at(pred_node);
+                // Cannot be in the same node as predecessor
+                if (pred_c_id == target_c_node.id) {
+                    return false;
+                }
+                // Target node must be reachable from the predecessor's node
+                if (!is_compressed_reachable(pred_c_id, target_c_node.id, compressed_adj)) {
+                    return false;
+                }
+            } else {
+                 // This case implies pred_node hasn't been processed yet, which shouldn't happen
+                 // if we process in topological order. Log warning if it occurs.
+                 std::cerr << "Warning: Predecessor " << pred_node.method_id << ":" << pred_node.index
+                           << " of " << node_to_place.method_id << ":" << node_to_place.index
+                           << " not found in node_to_compressed_id map during can_fit check." << std::endl;
+                 return false; // Cannot determine compatibility if predecessor isn't placed
+            }
+        }
+    }
+
+    // 4. Check Successor Constraints (using compressed graph) - Ensure we don't place *after* a successor
+     if (original_adj.count(node_to_place)) {
+         for (const auto& succ_node : original_adj.at(node_to_place)) {
+             // If successor has been placed
+             if (node_to_compressed_id.count(succ_node)) {
+                 int succ_c_id = node_to_compressed_id.at(succ_node);
+                 // Cannot be in the same node as successor
+                 if (succ_c_id == target_c_node.id) {
+                     return false;
+                 }
+                 // Target node must NOT be reachable FROM the successor's node (target must come before or be parallel)
+                 if (is_compressed_reachable(succ_c_id, target_c_node.id, compressed_adj)) {
+                     return false;
+                 }
+             }
+             // If successor not placed yet, no constraint violation for now.
+         }
+     }
+
+
+    return true; // Passed all checks
+}
+
+
+CompressedDAG compressDAGs(
+    const std::unordered_map<int, MethodDAGInfo> &dags_info_per_method)
+{
+    CompressedDAG result;
+    std::unordered_set<UnifiedNode, UnifiedNodeHash> all_unified_nodes;
+    std::unordered_map<UnifiedNode, std::unordered_set<UnifiedNode, UnifiedNodeHash>, UnifiedNodeHash> original_adj;     // Successors
+    std::unordered_map<UnifiedNode, std::unordered_set<UnifiedNode, UnifiedNodeHash>, UnifiedNodeHash> original_rev_adj; // Predecessors
+    std::unordered_map<UnifiedNode, int, UnifiedNodeHash> original_in_degree;
+
+    // --- 1. Build Combined Original Graph & Collect All Nodes ---
+    for (const auto &method_pair : dags_info_per_method) {
+        int method_id = method_pair.first;
+        const MethodDAGInfo &dag_info = method_pair.second;
+
+        for (size_t i = 0; i < dag_info.subtask_ids.size(); ++i) {
+            UnifiedNode current_node = {method_id, i};
+            all_unified_nodes.insert(current_node);
+            if (original_in_degree.find(current_node) == original_in_degree.end()) {
+                original_in_degree[current_node] = 0;
+            }
+        }
+
+        for (const auto &constraint_indices : dag_info.ordering_constraints) {
+            size_t u_index = constraint_indices.first;
+            size_t v_index = constraint_indices.second;
+
+            if (u_index >= dag_info.subtask_ids.size() || v_index >= dag_info.subtask_ids.size()) {
+                 std::cerr << "Error: Invalid index in ordering constraints for method " << method_id << std::endl;
+                continue;
+            }
+
+            UnifiedNode u_node = {method_id, u_index};
+            UnifiedNode v_node = {method_id, v_index};
+
+            if (original_adj[u_node].find(v_node) == original_adj[u_node].end()) {
+                original_adj[u_node].insert(v_node);
+                original_rev_adj[v_node].insert(u_node);
+                original_in_degree[v_node]++;
+            }
+        }
+    }
+
+    // --- 1.5 Compute All-Pairs Reachability on Original Graph ---
+    std::unordered_map<UnifiedNode, std::unordered_set<UnifiedNode, UnifiedNodeHash>, UnifiedNodeHash> original_reachability;
+    for (const auto& node : all_unified_nodes) {
+        compute_original_reachability(node, original_adj, original_reachability);
+    }
+
+    // --- 2. Initialize for Compression ---
+    std::set<UnifiedNode, UnifiedNodeCompare> ready_nodes; // Ready nodes from original graph
+    for (const auto &node : all_unified_nodes) {
+        if (original_in_degree.count(node) == 0 || original_in_degree[node] == 0) {
+            ready_nodes.insert(node);
+        }
+    }
+
+    int compressed_node_id_counter = 0;
+    std::unordered_set<UnifiedNode, UnifiedNodeHash> processed_nodes; // Original nodes placed
+    // Map from compressed node ID to its direct successors (IDs)
+    std::unordered_map<int, std::unordered_set<int>> compressed_adj;
+    // Map from compressed node ID to its direct predecessors (IDs) - useful for adding edges
+    std::unordered_map<int, std::unordered_set<int>> compressed_rev_adj;
+
+
+    // --- 3. Main Compression Loop (Topological Sort + Fitting) ---
+    while (processed_nodes.size() < all_unified_nodes.size()) {
+        if (ready_nodes.empty()) {
+            if (processed_nodes.size() != all_unified_nodes.size()) {
+                 std::cerr << "Error: Cycle detected or disconnected components in the input DAGs. Cannot compress completely." << std::endl;
+            }
+            break;
+        }
+
+        // Deterministically select the next node to process
+        UnifiedNode node_to_place = *ready_nodes.begin();
+        ready_nodes.erase(ready_nodes.begin());
+
+        // Find the best existing compressed node to fit into
+        int target_c_node_id = -1;
+        for (const auto& c_node : result.nodes) { // Iterate existing nodes in order of creation
+             if (can_fit(node_to_place, c_node, original_adj, original_rev_adj, original_reachability, result.node_to_compressed_id, compressed_adj)) {
+                 target_c_node_id = c_node.id;
+                 break; // Found the earliest fitting node
+             }
+        }
+
+        int current_c_node_id;
+        std::set<int> direct_preds_c_ids; // IDs of direct predecessors' compressed nodes
+
+        // Determine direct predecessors in the compressed graph
+         if (original_rev_adj.count(node_to_place)) {
+             for (const auto& pred_node : original_rev_adj.at(node_to_place)) {
+                 if (result.node_to_compressed_id.count(pred_node)) { // Should always be true here
+                     direct_preds_c_ids.insert(result.node_to_compressed_id.at(pred_node));
+                 }
+             }
+         }
+
+
+        if (target_c_node_id != -1) {
+            // --- Fit into existing node ---
+            current_c_node_id = target_c_node_id;
+            // Find the actual node object to modify it
+            for(auto& c_node : result.nodes) {
+                if(c_node.id == current_c_node_id) {
+                    c_node.original_nodes[node_to_place.method_id] = node_to_place.index;
+                    break;
+                }
+            }
+            result.node_to_compressed_id[node_to_place] = current_c_node_id;
+
+            // Update compressed edges: ensure edges from all direct predecessors point to this node
+            for (int pred_c_id : direct_preds_c_ids) {
+                 if (pred_c_id != current_c_node_id) { // Avoid self-loops for now
+                    compressed_adj[pred_c_id].insert(current_c_node_id);
+                    compressed_rev_adj[current_c_node_id].insert(pred_c_id);
+                 }
+            }
+
+        } else {
+            // --- Create new compressed node ---
+            CompressedNode new_c_node;
+            new_c_node.id = compressed_node_id_counter++;
+            new_c_node.original_nodes[node_to_place.method_id] = node_to_place.index;
+            result.nodes.push_back(new_c_node);
+            current_c_node_id = new_c_node.id;
+            result.node_to_compressed_id[node_to_place] = current_c_node_id;
+
+            // Add edges from direct predecessors to this new node
+            for (int pred_c_id : direct_preds_c_ids) {
+                 compressed_adj[pred_c_id].insert(current_c_node_id);
+                 compressed_rev_adj[current_c_node_id].insert(pred_c_id);
+            }
+        }
+
+        processed_nodes.insert(node_to_place);
+
+        // Update readiness of successors in the original graph
+        if (original_adj.count(node_to_place)) {
+            for (const auto &successor : original_adj.at(node_to_place)) {
+                if (processed_nodes.find(successor) == processed_nodes.end()) {
+                    if (original_in_degree.count(successor)) { // Should always exist
+                        original_in_degree[successor]--;
+                        if (original_in_degree[successor] == 0) {
+                            ready_nodes.insert(successor);
+                        }
+                    }
+                }
+            }
+        }
+    } // End while loop
+
+    // --- 4. Build Final Compressed Edges (from compressed_adj) ---
+    // The compressed_adj already contains the direct edges.
+    // We need to compute the transitive closure.
+    std::set<std::pair<int, int>> final_edges_set;
+    for(const auto& pair : compressed_adj) {
+        int u_id = pair.first;
+        for(int v_id : pair.second) {
+            final_edges_set.insert({u_id, v_id});
+        }
+    }
+
+    // --- 5. Compute Transitive Closure ---
+    std::vector<int> node_ids;
+    for (const auto &cnode : result.nodes) {
+        node_ids.push_back(cnode.id);
+    }
+    std::sort(node_ids.begin(), node_ids.end()); // Ensure consistent order if needed
+
+    // Floyd-Warshall based transitive closure
+    for (int k_id : node_ids) {
+        for (int i_id : node_ids) {
+            bool i_k_exists = final_edges_set.count({i_id, k_id});
+            if (!i_k_exists) continue;
+
+            for (int j_id : node_ids) {
+                bool k_j_exists = final_edges_set.count({k_id, j_id});
+                if (k_j_exists) {
+                    final_edges_set.insert({i_id, j_id});
+                }
+            }
+        }
+    }
+
+    // Convert set of edges to vector
+    result.edges.assign(final_edges_set.begin(), final_edges_set.end());
+    return result;
+}
+
+
+std::vector<std::pair<int, int>> remove_transitive_edges(
+    const std::vector<std::pair<int, int>>& edges)
+{
+    if (edges.empty()) {
+        return {};
+    }
+
+    std::unordered_map<int, std::unordered_set<int>> adj;
+    std::unordered_set<int> nodes;
+
+    // Build adjacency list and collect nodes
+    for (const auto& edge : edges) {
+        adj[edge.first].insert(edge.second);
+        nodes.insert(edge.first);
+        nodes.insert(edge.second);
+    }
+
+    // Compute all-pairs reachability (can be optimized, but BFS per node is simple)
+    // We store reachability info: reachable[start_node] = {set of reachable nodes}
+    std::unordered_map<int, std::unordered_set<int>> reachable;
+    for (int start_node : nodes) {
+        std::queue<int> q;
+        std::unordered_set<int> visited;
+
+        q.push(start_node);
+        visited.insert(start_node);
+        // reachable[start_node].insert(start_node); // Typically don't include self in this context
+
+        while (!q.empty()) {
+            int current = q.front();
+            q.pop();
+
+            if (adj.count(current)) {
+                for (int neighbor : adj.at(current)) {
+                    if (visited.find(neighbor) == visited.end()) {
+                        visited.insert(neighbor);
+                        reachable[start_node].insert(neighbor); // Record reachability
+                        q.push(neighbor);
+                    }
+                }
+            }
+        }
+    }
+
+
+    std::vector<std::pair<int, int>> non_transitive_edges;
+    std::set<std::pair<int, int>> edge_set(edges.begin(), edges.end()); // For quick lookup
+
+    for (const auto& edge : edges) {
+        int u = edge.first;
+        int v = edge.second;
+        bool is_transitive = false;
+
+        // Check if there exists an intermediate node 'w' such that u -> w and w -> ... -> v
+        if (adj.count(u)) {
+            for (int w : adj.at(u)) {
+                if (w == v) continue; // Don't consider the direct edge path u -> v
+
+                // Check if w can reach v (using the precomputed reachability)
+                if (reachable.count(w) && reachable.at(w).count(v)) {
+                    is_transitive = true;
+                    break; // Found an intermediate path, so (u, v) is transitive
+                }
+            }
+        }
+
+        if (!is_transitive) {
+            non_transitive_edges.push_back(edge);
+        }
+    }
+
+    return non_transitive_edges;
+}
+
+
+
+void compressed_dag_test() {
+    // Test with two methods with some ordering constraints
+    MethodDAGInfo method0;
+    method0.subtask_ids = {0, 1, 2}; // Represents tasks/steps, values don't matter here
+    method0.ordering_constraints = {{0, 1}, {1, 2}}; 
+
+    MethodDAGInfo method1;
+    method1.subtask_ids = {0, 1, 2, 3}; // Represents tasks/steps
+    method1.ordering_constraints = {{0, 1}, {0, 2}, {1, 3}, {2, 3}}; 
+
+    std::unordered_map<int, MethodDAGInfo> dags_info_per_method;
+    dags_info_per_method[0] = method0; // Assign method ID 0
+    dags_info_per_method[1] = method1; // Assign method ID 1
+
+    // Compress the DAGs
+    std::cout << "--- Running compressed_dag_test ---" << std::endl;
+    CompressedDAG compressed_dag = compressDAGs(dags_info_per_method);
+
+    // Print the resulting compressed DAG
+    std::cout << "Compressed Nodes (" << compressed_dag.nodes.size() << "):" << std::endl;
+    // Sort nodes by ID for consistent output
+    std::sort(compressed_dag.nodes.begin(), compressed_dag.nodes.end(),
+              [](const CompressedNode& a, const CompressedNode& b){ return a.id < b.id; });
+    for (const auto& node : compressed_dag.nodes) {
+        std::cout << "  Node ID: " << node.id << " contains { ";
+        // Sort original nodes within compressed node for consistent output
+        std::map<int, size_t> sorted_originals = node.original_nodes;
+        for (const auto& pair : sorted_originals) {
+            std::cout << "m" << pair.first << ":" << pair.second << " ";
+        }
+        std::cout << "}" << std::endl;
+    }
+
+    std::cout << "Compressed Edges (" << compressed_dag.edges.size() << "):" << std::endl;
+    // Sort edges for consistent output
+    std::sort(compressed_dag.edges.begin(), compressed_dag.edges.end());
+    for (const auto& edge : compressed_dag.edges) {
+        std::cout << "  " << edge.first << " -> " << edge.second << std::endl;
+    }
+
+    std::cout << "--- compressed_dag_test finished ---" << std::endl;
+
+    int a = 0; // Keep breakpoint possibility
+    // exit(0);
+}
