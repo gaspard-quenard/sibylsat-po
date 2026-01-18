@@ -203,7 +203,7 @@ void HtnInstance::loadGroundedProblem(const std::string &grounded_problem_filepa
         }
     }
 
-    if (_params.isNonzero("po_with_before")) {
+    if (_partial_order_problem) {
         addInitAndGoalActionsToRootMethod();
     }
     

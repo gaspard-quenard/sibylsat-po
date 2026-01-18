@@ -46,7 +46,7 @@ PATH_BENCHMARKS = [
 ]
 
 
-planner_config = "./treerex {domain_path} {problem_path} -po -mutex -po_with_before=1 -po_with_before_v2=1 -po_with_before_v2_no_task_overleaf -sibylsat"
+planner_config = "./build/treerex {domain_path} {problem_path} -po -sibylsat"
 
 
 if __name__ == "__main__":

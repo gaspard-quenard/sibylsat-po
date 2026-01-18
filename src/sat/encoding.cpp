@@ -47,396 +47,6 @@ void Encoding::encode(std::vector<PdtNode *> &leaf_nodes)
     }
 }
 
-void Encoding::encodePO(std::vector<PdtNode *> &leaf_nodes)
-{
-
-    // Number of time steps is set to the number of leaf nodes.
-    size_t num_ts = leaf_nodes.size();
-    _num_ts = num_ts;
-
-    // -----------------------------------------------------------------------------
-    // Variable Setup
-    //
-    // We create two 2D vectors that store SAT variable IDs:
-    //   1. _ts_to_leaf_node[t][j]: true if time step t is assigned to leaf node j.
-    //   2. leaf_node_is_activated[t][j]: true if leaf node j is activated at time t.
-    // -----------------------------------------------------------------------------
-
-    _ts_to_leaf_node.clear();
-    // _ts_to_leaf_node(num_ts, std::vector<int>(num_ts, 0));
-    _ts_to_leaf_node.resize(num_ts, std::vector<int>(num_ts, 0));
-    std::vector<std::vector<int>> leaf_node_is_activated(num_ts, std::vector<int>(num_ts, 0));
-
-    int num_skipped = 0;
-
-    // Initialize SAT variables for the assignment of each time step to a leaf node.
-    for (size_t j = 0; j < num_ts; ++j)
-    {
-        int base_ts_for_j = _po_v2 ? leaf_nodes[j]->getBaseTimeStep() : 0;
-        int final_ts_for_j = _po_v2 ? leaf_nodes[j]->getEndTimeStep(num_ts) : num_ts;
-        num_skipped += base_ts_for_j + (num_ts - final_ts_for_j);
-        for (size_t t = base_ts_for_j; t < final_ts_for_j; ++t)
-        {
-            int var = VariableProvider::nextVar();
-            _ts_to_leaf_node[t][j] = var;
-            if (_print_var_names)
-            {
-                // Variable name: "layer_<layer_idx>__ts_<t>_leaf_<j>"
-                std::string var_name = "layer_" + std::to_string(_layer_idx) + "__ts_" + std::to_string(t) + "_leaf_" + std::to_string(j);
-                Log::i("PVN: %d %s\n", var, var_name.c_str());
-            }
-        }
-    }
-
-    if (_po_v2)
-    {
-        Log::i("Skipped %d/%zu variables\n", num_skipped, num_ts * num_ts);
-    }
-
-    // Initialize SAT variables for the activation status of each leaf node at every time step.
-    for (size_t j = 0; j < num_ts; ++j)
-    {
-        int base_ts_for_j = _po_v2 ? leaf_nodes[j]->getBaseTimeStep() : 0;
-        // int final_ts_for_j = _po_v2 ? leaf_nodes[j]->getEndTimeStep(num_ts) : num_ts;
-        int final_ts_for_j = num_ts;
-        for (size_t t = base_ts_for_j; t < final_ts_for_j; ++t)
-        {
-            int var = VariableProvider::nextVar();
-            leaf_node_is_activated[t][j] = var;
-            if (_print_var_names)
-            {
-                // Variable name: "layer_<layer_idx>__ts_<t>_leaf_<j>_activated"
-                std::string var_name = "layer_" + std::to_string(_layer_idx) + "__ts_" + std::to_string(t) + "_leaf_" + std::to_string(j) + "_activated";
-                Log::i("PVN: %d %s\n", var, var_name.c_str());
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------------
-    // Constraint 1: Each time step must be assigned to exactly one leaf node.
-    //
-    // For every time step t:
-    //   - At least one leaf node must be assigned (add disjunction clause).
-    //   - At most one leaf node must be assigned (encode the at-most-one constraint).
-    // -----------------------------------------------------------------------------
-    for (size_t t = 0; t < num_ts; ++t)
-    {
-        std::vector<int> clause;
-        for (size_t j = 0; j < num_ts; ++j)
-        {
-            if (_po_v2 && leaf_nodes[j]->canBeExecutedAtTimeStep(t, num_ts) == false)
-            {
-                // Skip the variable if the leaf node cannot be assigned at this time step.
-                continue;
-            }
-            clause.push_back(_ts_to_leaf_node[t][j]);
-        }
-        _sat.addClause(clause);
-        // Log::i("Clause size %zu\n", clause.size());
-
-        // Ensure at most one leaf node is assigned at time step t.
-        encodeAtMostOne(clause);
-    }
-
-    // -----------------------------------------------------------------------------
-    // Constraint 2: Each leaf node must be assigned to exactly one time step.
-    //
-    // For every leaf node j:
-    //   - At least one time step must assign it (add disjunction clause).
-    //   - At most one time step can assign it (encode the at-most-one constraint).
-    // -----------------------------------------------------------------------------
-    for (size_t j = 0; j < num_ts; ++j)
-    {
-        std::vector<int> clause;
-        int base_ts_for_j = _po_v2 ? leaf_nodes[j]->getBaseTimeStep() : 0;
-        int final_ts_for_j = _po_v2 ? leaf_nodes[j]->getEndTimeStep(num_ts) : num_ts;
-        for (size_t t = base_ts_for_j; t < final_ts_for_j; ++t)
-        {
-            clause.push_back(_ts_to_leaf_node[t][j]);
-        }
-        _sat.addClause(clause);
-
-        // Enforce that a leaf node j is not assigned at more than one time step.
-        encodeAtMostOne(clause);
-    }
-
-    // -----------------------------------------------------------------------------
-    // Constraint 3: Linking Assignment and Activation
-    //
-    // The following constraints ensure that if a leaf node is assigned at a given time step,
-    // then its "activation" status is updated accordingly with a persistence constraint.
-    //
-    // For every time step t and leaf node j:
-    //   - If _ts_to_leaf_node[t][j] is true, then leaf_node_is_activated[t][j] must be true.
-    //   - For t > 0, if leaf_node_is_activated[t-1][j] is true then leaf_node_is_activated[t][j] remains true.
-    //   - For t > 0, activation at time t requires that either the node was already activated at t-1
-    //     or it is assigned at time t.
-    //   - Base case: at time 0, a node is activated if and only if it is assigned.
-    // -----------------------------------------------------------------------------
-    for (size_t j = 0; j < num_ts; ++j)
-    {
-        int base_ts_for_j = _po_v2 ? leaf_nodes[j]->getBaseTimeStep() : 0;
-        // int final_ts_for_j = _po_v2 ? leaf_nodes[j]->getEndTimeStep(num_ts) : num_ts;
-        int final_ts_for_j = num_ts;
-        for (size_t t = base_ts_for_j; t < final_ts_for_j; ++t)
-        {
-            // If assigned at time t, then the leaf node is activated at time t:
-            //    _ts_to_leaf_node[t][j] => leaf_node_is_activated[t][j]
-            // which is equivalent to:  ~_ts_to_leaf_node[t][j] OR leaf_node_is_activated[t][j]
-            if (!_po_v2 || leaf_nodes[j]->canBeExecutedAtTimeStep(t, num_ts))
-            {
-                _sat.addClause(-_ts_to_leaf_node[t][j], leaf_node_is_activated[t][j]);
-            }
-
-            if (t > base_ts_for_j)
-            {
-                // Persistence: if activated at t-1 then must be activated at t.
-                //    leaf_node_is_activated[t-1][j] => leaf_node_is_activated[t][j]
-                // which gives:  ~leaf_node_is_activated[t-1][j] OR leaf_node_is_activated[t][j]
-                _sat.addClause(-leaf_node_is_activated[t - 1][j], leaf_node_is_activated[t][j]);
-
-                // If activated at time t, then either it was activated at t-1 or it is assigned at t:
-                //    leaf_node_is_activated[t][j] => (leaf_node_is_activated[t-1][j] OR _ts_to_leaf_node[t][j])
-                // which is equivalent to:  ~leaf_node_is_activated[t][j] OR leaf_node_is_activated[t-1][j] OR _ts_to_leaf_node[t][j]
-                if (_po_v2)
-                {
-
-                    if (leaf_nodes[j]->canBeExecutedAtTimeStep(t, num_ts))
-                    {
-                        // If the leaf node can be executed at time t, add the clause.
-                        _sat.addClause(-leaf_node_is_activated[t][j], leaf_node_is_activated[t - 1][j], _ts_to_leaf_node[t][j]);
-                    }
-                    else
-                    {
-                        // If the leaf node cannot be executed at time t, skip the clause.
-                        continue;
-                    }
-                }
-                else
-                {
-                    _sat.addClause(-leaf_node_is_activated[t][j], leaf_node_is_activated[t - 1][j], _ts_to_leaf_node[t][j]);
-                }
-            }
-            else
-            {
-                // Base case (t == 0): activation at time 0 implies assignment at time 0.
-                //    leaf_node_is_activated[0][j] => _ts_to_leaf_node[0][j]
-                // which is:  ~leaf_node_is_activated[0][j] OR _ts_to_leaf_node[0][j]
-                // (Combined with the forward implication above, this makes them equivalent at t=0.)
-                _sat.addClause(-leaf_node_is_activated[base_ts_for_j][j], _ts_to_leaf_node[base_ts_for_j][j]);
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------------
-    // Constraint 4: Precondition Constraints based on Execution Order
-    //
-    // For each leaf node 'node' (with index j), we add a constraint such that if the
-    // node is assigned at time step t, then all of its prerequisite nodes (nodes that
-    // must be executed before it) must have been activated by time t.
-    // -----------------------------------------------------------------------------
-    for (int j = 0; j < leaf_nodes.size(); ++j)
-    {
-        const PdtNode *node = leaf_nodes[j];
-        int base_ts_for_j = _po_v2 ? node->getBaseTimeStep() : 0;
-        int final_ts_for_j = _po_v2 ? node->getEndTimeStep(num_ts) : num_ts;
-        // Retrieve prerequisite nodes that must be executed before this node.
-        const std::unordered_set<PdtNode *> &nodes_that_must_be_executed_before = node->getNodeThatMustBeExecutedBefore();
-        for (size_t t = base_ts_for_j; t < final_ts_for_j; t++)
-        {
-            for (PdtNode *prev_node : nodes_that_must_be_executed_before)
-            {
-                if (_po_v2 && prev_node->canBeExecutedAtTimeStep(t, num_ts) == false)
-                {
-                    // Skip the variable if we know for sure that the prerequisite node must have been executed at this time step.
-                    continue;
-                }
-                // If the node is assigned at time t, the this prerequisite node must be activated at time t.
-                _sat.addClause(-_ts_to_leaf_node[t][node->getPos()], leaf_node_is_activated[t][prev_node->getPos()]);
-            }
-        }
-        // Retrieve prerequisite nodes that must be executed after this node.
-        const std::unordered_set<PdtNode *> &nodes_that_must_be_executed_after = node->getNodeThatMustBeExecutedAfter();
-        for (size_t t = base_ts_for_j; t < final_ts_for_j; t++)
-        {
-            for (PdtNode *next_node : nodes_that_must_be_executed_after)
-            {
-                if (_po_v2 && next_node->canBeExecutedAtTimeStep(t, num_ts) == false)
-                {
-                    // Skip the variable if we know for sure that the prerequisite node must not have been executed at this time step.
-                    continue;
-                }
-                // If the node is assigned at time t, the this next node must not be activated at time t.
-                _sat.addClause(-_ts_to_leaf_node[t][node->getPos()], -leaf_node_is_activated[t][next_node->getPos()]);
-            }
-        }
-    }
-
-    // Finally, create a new var for leaf overleafs, that will be used for the FA
-    int leaf_overleaf_var = VariableProvider::nextVar();
-    if (_print_var_names)
-    {
-        // Variable name: "layer_<layer_idx>__leaf_overleaf"
-        std::string var_name = "layer_" + std::to_string(_layer_idx) + "__leaf_overleaf";
-        Log::i("PVN: %d %s\n", leaf_overleaf_var, var_name.c_str());
-    }
-    _leaf_overleaf_vars.push_back(leaf_overleaf_var);
-
-    // Reencode the init state
-    encodeInitialState(leaf_nodes[0]->getFactVariables(), _htn.getInitState());
-
-    if (_encode_mutexes)
-    {
-        // Encode mutexes for all time steps
-        for (int t = 1; t < num_ts; ++t)
-        {
-            const std::vector<int> &current_fact_vars = leaf_nodes[t]->getFactVariables();
-            // ENcode all groups
-            for (const std::vector<int> &group : _htn.getMutex().getMutexGroups())
-            {
-
-                std::vector<int> group_vars;
-                for (int pred_idx : group)
-                {
-                    // Get the variable for this predicate at this time step
-                    int var = current_fact_vars[pred_idx];
-                    group_vars.push_back(var);
-                }
-                // Encode the at-most-one constraint for this group
-                encodeAtMostOne(group_vars);
-            }
-        }
-    }
-
-    for (int i = 0; i < leaf_nodes.size(); ++i)
-    {
-        // Log::i("Encode node %d/%d: %s\n", i, leaf_nodes.size(), TOSTR(*leaf_nodes[i]));
-        PdtNode *node = leaf_nodes[i];
-        const PdtNode *parent_node = node->getParent();
-        // int leaf_overleaf_var = node->getLeafOverleafVariable();
-
-        int base_ts_for_j = _po_v2 ? node->getBaseTimeStep() : 0;
-        int final_ts_for_j = _po_v2 ? node->getEndTimeStep(num_ts) : num_ts;
-
-        // const std::vector<int> &current_fact_vars = node->getFactVariables();
-        // const std::vector<int> &next_fact_vars = i + 1 < leaf_nodes.size() ? leaf_nodes[i + 1]->getFactVariables() : _htn.getFactVarsGoal();
-
-        // action implies prim, method implies not prim
-        encodePrimitivenessOps(node->getActionAndVariables(), node->getMethodAndVariables(), node->getPrimVariable());
-
-        // Encode the hierarchy of each ops
-        encodeHierarchy(node, parent_node);
-
-        std::unordered_map<int, std::unordered_set<int>> positive_effs_can_be_implied_by;
-        std::unordered_map<int, std::unordered_set<int>> negative_effs_can_be_implied_by;
-
-        // Action implies precondition and effects, get as well all the predicates that can be changed and the actions that can change them
-        // encodeActions(node->getActionAndVariables(), current_fact_vars, next_fact_vars, positive_effs_can_be_implied_by, negative_effs_can_be_implied_by);
-
-        // Encode actions for each possible ts
-        for (int t = base_ts_for_j; t < final_ts_for_j; ++t)
-        {
-            const std::vector<int> &current_fact_vars = leaf_nodes[t]->getFactVariables();
-            const std::vector<int> &next_fact_vars = t + 1 < leaf_nodes.size() ? leaf_nodes[t + 1]->getFactVariables() : _htn.getFactVarsGoal();
-
-            for (const auto &[action_idx, action_var] : node->getActionAndVariables())
-            {
-                const Action &action = _htn.getActionById(action_idx);
-                for (int precondition_idx : action.getPreconditionsIdx())
-                {
-                    // Action && _ts_to_leaf_node[t][j] => precondition
-                    // in CNF:
-                    // (not action_var or not _ts_to_leaf_node[t][j] or current_fact_vars[precondition_idx])
-                    // _sat.addClause(-action_var, -_ts_to_leaf_node[t][node->getPos()], leaf_overleaf_var, current_fact_vars[precondition_idx]);
-                    _sat.addClause(-action_var, -_ts_to_leaf_node[t][node->getPos()], current_fact_vars[precondition_idx]);
-                }
-                // For the action, we have to add the fact that the effects can only apply if we do not have a leaf overleaf
-                for (int pos_effect_idx : action.getPosEffsIdx())
-                {
-                    // Same things for effects
-                    // _sat.addClause(-action_var, -_ts_to_leaf_node[t][node->getPos()], next_fact_vars[pos_effect_idx]);
-                    _sat.addClause(-action_var, -_ts_to_leaf_node[t][node->getPos()], leaf_overleaf_var, next_fact_vars[pos_effect_idx]);
-                }
-                for (int neg_effect_idx : action.getNegEffsIdx())
-                {
-                    // Same things for effects
-                    // _sat.addClause(-action_var, -_ts_to_leaf_node[t][node->getPos()], -next_fact_vars[neg_effect_idx]);
-                    _sat.addClause(-action_var, -_ts_to_leaf_node[t][node->getPos()], leaf_overleaf_var, -next_fact_vars[neg_effect_idx]);
-                }
-            }
-        }
-
-        // Get the positive effects and negative effects of the actions
-        for (const auto &[action_idx, action_var] : node->getActionAndVariables())
-        {
-            const Action &action = _htn.getActionById(action_idx);
-            for (int pos_effect_idx : action.getPosEffsIdx())
-            {
-                positive_effs_can_be_implied_by[pos_effect_idx].insert(action_var);
-            }
-            for (int neg_effect_idx : action.getNegEffsIdx())
-            {
-                negative_effs_can_be_implied_by[neg_effect_idx].insert(action_var);
-            }
-        }
-
-        // const std::vector<int> &current_fact_vars = node->getFactVariables();
-        // const std::vector<int> &next_fact_vars = i + 1 < leaf_nodes.size() ? leaf_nodes[i + 1]->getFactVariables() : _htn.getFactVarsGoal();
-
-        // Method implies precondition (Here method precondition is compiled into an action which is the first subtask of the method)
-        // encodeMethods(node->getMethodAndVariables(), current_fact_vars, next_fact_vars);
-
-        // Encode frame axioms
-        // encodeFrameAxioms(current_fact_vars, next_fact_vars, node->getPrimVariable(), positive_effs_can_be_implied_by, negative_effs_can_be_implied_by);
-        // Encode frame axioms for each possible ts
-        const int &prim_var = node->getPrimVariable();
-        for (int t = base_ts_for_j; t < final_ts_for_j; ++t)
-        {
-            const std::vector<int> &current_fact_vars = leaf_nodes[t]->getFactVariables();
-            const std::vector<int> &next_fact_vars = t + 1 < leaf_nodes.size() ? leaf_nodes[t + 1]->getFactVariables() : _htn.getFactVarsGoal();
-            // const int &prim_var = leaf_nodes[t]->getPrimVariable();
-
-            for (int i = 0; i < _htn.getNumPredicates(); i++)
-            {
-                // If this predicate was true and become false, then either there is a method responsable for this change (so the position is non primtiive)
-                // Or an action must be responsible for this change:
-                // pred__t and not pred__t+1 => (non prim or negative effect of an action)
-                // In CNF:
-                // (not pred__t or pred__t+1 or non_prim or action_1_with_negative_effect or action_2_with_negative_effect)
-                _sat.appendClause(-current_fact_vars[i], next_fact_vars[i]);
-                _sat.appendClause(-_ts_to_leaf_node[t][node->getPos()]); // Check only for this node at this ts
-                _sat.appendClause(-prim_var);
-                // Is there a leaf overleaf ?
-                _sat.appendClause(leaf_overleaf_var);
-                if (negative_effs_can_be_implied_by.find(i) != negative_effs_can_be_implied_by.end())
-                {
-                    for (int action_var : negative_effs_can_be_implied_by.at(i))
-                    {
-                        _sat.appendClause(action_var);
-                    }
-                }
-                _sat.endClause();
-                // Do the same things if a predicate was false and become true
-                _sat.appendClause(current_fact_vars[i], -next_fact_vars[i]);
-                _sat.appendClause(-_ts_to_leaf_node[t][node->getPos()]); // Check only for this node at this ts
-                _sat.appendClause(-prim_var);
-                // Is there a leaf overleaf ?
-                _sat.appendClause(leaf_overleaf_var);
-                if (positive_effs_can_be_implied_by.find(i) != positive_effs_can_be_implied_by.end())
-                {
-                    for (int action_var : positive_effs_can_be_implied_by.at(i))
-                    {
-                        _sat.appendClause(action_var);
-                    }
-                }
-                _sat.endClause();
-            }
-        }
-    }
-
-    _layer_idx++;
-}
-
 void Encoding::encodePOWithBefore(std::vector<PdtNode *> &leaf_nodes)
 {
 
@@ -605,101 +215,88 @@ void Encoding::encodePOWithBefore(std::vector<PdtNode *> &leaf_nodes)
     // _leaf_overleaf_vars.push_back(leaf_overleaf_var);
 
     _stats.begin(STAGE_BEFORE_HIERARCHY);
-    if (_po_with_before_v2)
+    // Encode special before variables
+    Log::i("Encoding special before variables...\n");
+    std::unordered_map<const PdtNode *, std::vector<const PdtNode *>> first_children_map;
+    std::unordered_map<const PdtNode *, std::vector<const PdtNode *>> children_map;
+    // Special hierarchy can be encoded. If next_pos_1__pos_2 is true, then the first child of pos_1 must be before the first child of pos_2
+    for (int i = 0; i < leaf_nodes.size(); ++i)
     {
-        Log::i("Encoding special before variables...\n");
-        std::unordered_map<const PdtNode *, std::vector<const PdtNode *>> first_children_map;
-        // Special hierarchy can be encoded. If next_pos_1__pos_2 is true, then the first child of pos_1 must be before the first child of pos_2
-        for (int i = 0; i < leaf_nodes.size(); ++i)
+        const PdtNode *node = leaf_nodes[i];
+        const PdtNode *parent = node->getParent();
+        children_map[parent].push_back(node);
+        if (node->canBeFirstChild())
         {
-            const PdtNode *node = leaf_nodes[i];
-            if (node->canBeFirstChild())
-            {
-                const PdtNode *parent = node->getParent();
-                first_children_map[parent].push_back(node);
-            }
+            first_children_map[parent].push_back(node);
         }
-
-        for (const auto &[parent, first_children] : first_children_map)
-        {
-            for (const auto &[next_node, next_node_var] : parent->getPossibleNextNodeVariable())
-            {
-                const std::vector<const PdtNode *> &next_node_first_children = first_children_map[next_node];
-
-                // Get all the possible before variables
-                std::vector<int> before_vars;
-                for (const PdtNode *first_child : first_children)
-                {
-                    for (const PdtNode *next_node_first_child : next_node_first_children)
-                    {
-                        // Get the before variable for the first child of parent and the first child of next_node
-                        int before_var = first_child->getBeforeNextNodeVar(next_node_first_child);
-                        if (before_var != -1)
-                        {
-                            before_vars.push_back(before_var);
-                        }
-                    }
-                }
-
-                int next_node_vars_2 = parent->getBeforeNextNodeVar(next_node);
-
-                // If the next node is true, then one of the before variables must be true
-                if (before_vars.size() > 0)
-                {
-                    // Encode the clause: next_node_var => before_vars
-                    // _sat.appendClause(-next_node_var);
-                    _sat.appendClause(-next_node_vars_2);
-                    for (int before_var : before_vars)
-                    {
-                        _sat.appendClause(before_var);
-                    }
-                    _sat.endClause();
-                }
-            }
-        }
-        Log::i("Finished encoding special before variables.\n");
     }
+
+    for (const auto &[parent, first_children] : first_children_map)
+    {
+        for (const auto &[next_node, next_node_var] : parent->getPossibleNextNodeVariable())
+        {
+            const std::vector<const PdtNode *> &next_node_first_children = first_children_map[next_node];
+
+            // Get all the possible before variables
+            std::vector<int> before_vars;
+            for (const PdtNode *first_child : first_children)
+            {
+                for (const PdtNode *next_node_first_child : next_node_first_children)
+                {
+                    // Get the before variable for the first child of parent and the first child of next_node
+                    int before_var = first_child->getBeforeNextNodeVar(next_node_first_child);
+                    if (before_var != -1)
+                    {
+                        before_vars.push_back(before_var);
+                    }
+                }
+            }
+
+            int next_node_vars_2 = parent->getBeforeNextNodeVar(next_node);
+
+            // If the next node is true, then one of the before variables must be true
+            if (before_vars.size() > 0)
+            {
+                _sat.appendClause(-next_node_vars_2);
+                for (int before_var : before_vars)
+                {
+                    _sat.appendClause(before_var);
+                }
+                _sat.endClause();
+            }
+        }
+    }
+    Log::i("Finished encoding special before variables.\n");
 
     int parent_overleaf_var = _leaf_overleaf_vars.size() > 0 ? _leaf_overleaf_vars.back() : -1;
 
-    if (_po_with_before_no_task_overleaf)
+    // Encode special before variables no task overleaf
+    Log::i("Encoding special before variables no task overleaf...\n");
+    for (const auto &[parent, children] : children_map)
     {
-        Log::i("Encoding special before variables no task overleaf...\n");
-        std::unordered_map<const PdtNode *, std::vector<const PdtNode *>> children_map;
-        // Special hierarchy can be encoded. If next_pos_1__pos_2 is true, then the first child of pos_1 must be before the first child of pos_2
-        for (int i = 0; i < leaf_nodes.size(); ++i)
+        for (const auto &[next_node, next_node_var] : parent->getPossibleNextNodeVariable())
         {
-            const PdtNode *node = leaf_nodes[i];
-                const PdtNode *parent = node->getParent();
-                children_map[parent].push_back(node);
-        }
+            std::vector<const PdtNode *> &next_node_children = children_map[next_node];
 
-        for (const auto &[parent, children] : children_map)
-        {
-            for (const auto &[next_node, next_node_var] : parent->getPossibleNextNodeVariable())
+            int next_node_vars_2 = parent->getBeforeNextNodeVar(next_node);
+
+            for (const PdtNode *child : children)
             {
-                std::vector<const PdtNode *> &next_node_children = children_map[next_node];
-
-                int next_node_vars_2 = parent->getBeforeNextNodeVar(next_node);
-
-                for (const PdtNode *child : children)
+                for (const PdtNode *next_node_child : next_node_children)
                 {
-                    for (const PdtNode *next_node_child : next_node_children)
+                    // Get the before variable for the first child of parent and the first child of next_node
+                    int before_var = child->getBeforeNextNodeVar(next_node_child);
+                    if (before_var != -1)
                     {
-                        // Get the before variable for the first child of parent and the first child of next_node
-                        int before_var = child->getBeforeNextNodeVar(next_node_child);
-                        if (before_var != -1)
-                        {
-                            // If the next node is true, then one of the before variables must be true
-                            // Encode the clause: next_node_var AND no_leaf_overleaf => before_vars
-                            _sat.addClause(-next_node_vars_2, parent_overleaf_var, before_var);
-                        }
+                        // If the next node is true, then one of the before variables must be true
+                        // Encode the clause: next_node_var AND no_leaf_overleaf => before_vars
+                        _sat.addClause(-next_node_vars_2, parent_overleaf_var, before_var);
                     }
                 }
             }
         }
-        Log::i("Finished encoding special before variables no task overleaf.\n");
     }
+    Log::i("Finished encoding special before variables no task overleaf.\n");
 
     _stats.endTiming(TimingStage::ENCODING_BEFORE);
     _stats.end(STAGE_BEFORE_HIERARCHY);
@@ -1078,23 +675,6 @@ void Encoding::encodeFrameAxioms(const std::vector<int> &current_fact_vars, cons
     }
 }
 
-void Encoding::encodeMutexes(const std::vector<int> &next_fact_vars, std::vector<int> &mutex_groups_to_encode)
-{
-    // For each mutex group, get the variables
-    for (int mutex_group_idx : mutex_groups_to_encode)
-    {
-        const std::vector<int> &mutex_group = _htn.getMutex().getMutexGroup(mutex_group_idx);
-        std::vector<int> mutex_vars;
-        mutex_vars.reserve(mutex_group.size());
-        for (int pred_idx : mutex_group)
-        {
-            mutex_vars.push_back(next_fact_vars[pred_idx]);
-        }
-        // Encode the at most one with the basic encoding
-        encodeAtMostOne(mutex_vars);
-    }
-}
-
 void Encoding::encodeAtMostOne(const std::vector<int> &vars)
 {
     if (vars.size() < 100)
@@ -1113,24 +693,6 @@ void Encoding::encodeAtMostOne(const std::vector<int> &vars)
         auto bamo = BimanderAtMostOne(vars, size_amo, (size_t)std::sqrt(size_amo));
         for (const auto &c : bamo.encode())
             _sat.addClause(c);
-    }
-}
-
-void Encoding::encodeAtMostOneOp(const std::unordered_map<int, int> &map_op_idx_to_var)
-{
-    std::vector<int> op_vars;
-    for (const auto &[op_idx, op_var] : map_op_idx_to_var)
-    {
-        op_vars.push_back(op_var);
-    }
-
-    // Encode the at most one with the basic encoding
-    for (int i = 0; i < op_vars.size(); i++)
-    {
-        for (int j = i + 1; j < op_vars.size(); j++)
-        {
-            _sat.addClause(-op_vars[i], -op_vars[j]);
-        }
     }
 }
 
@@ -1276,25 +838,9 @@ void Encoding::setOpsTrueInTree(PdtNode *node, bool is_po)
             node->setOpSolution(op_idx, OpType::ACTION);
             if (is_po && node->getChildren().size() == 0)
             {
-                if (_po_with_before)
-                {
-                    assignTsToLeafNode(node);
-                    Log::i("Set ts %d solution for action %s (var %d)\n", node->getTsSolution(), TOSTR(_htn.getActionById(op_idx)), op_var);
-                }
-                else
-                {
-                    for (size_t t = 0; t < _num_ts; t++)
-                    {
-                        if (_sat.holds(_ts_to_leaf_node[t][node->getPos()]) && node->getChildren().size() == 0)
-                        {
-                            Log::i("Set ts %d solution for action %s (var %d)\n", t, TOSTR(_htn.getActionById(op_idx)), op_var);
-                            node->setTsSolution(t);
-                            break;
-                        }
-                    }
-                }
+                assignTsToLeafNode(node);
+                Log::i("Set ts %d solution for action %s (var %d)\n", node->getTsSolution(), TOSTR(_htn.getActionById(op_idx)), op_var);
             }
-            // If in PO, needs to determinate the TS where this action is executed
             Log::i("  Action %s is true\n", TOSTR(_htn.getActionById(op_idx)));
             num_ops_true++;
         }

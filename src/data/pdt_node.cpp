@@ -192,12 +192,12 @@ void PdtNode::assignSatVariables(const HtnInstance &htn, const bool print_var_na
         }
     }
 
-    if (is_po) {
+    if (is_po)
+    {
         // Assign a variable for the leaf overleaf
         _leaf_overleaf_var = VariableProvider::nextVar();
         if (print_var_names)
         {
-            // std::string node_name = "node_" + node->getPositionString() + "__" + getPositionString();
             std::string node_name = "leaf_overleaf__" + getName();
             Log::i("PVN: %d %s\n", _leaf_overleaf_var, node_name.c_str());
         }
@@ -315,153 +315,6 @@ const std::unordered_set<PdtNode *> PdtNode::collectLeafChildren()
     return leaf_children;
 }
 
-void PdtNode::expandPO(HtnInstance &htn, bool order_between_child)
-{
-    // Collect all the nodes that must be executed before the children nodes
-    std::unordered_set<PdtNode *> nodes_that_must_be_executed_before;
-    for (PdtNode *node : _node_that_must_be_executed_before)
-    {
-        // Collect all the leaf children of the node
-        std::unordered_set<PdtNode *> leaf_children = node->collectLeafChildren();
-        nodes_that_must_be_executed_before.insert(leaf_children.begin(), leaf_children.end());
-    }
-
-    // Time to crack the number of children and ordering that must be found
-    std::unordered_map<int, MethodDAGInfo> dags_info_per_method;
-
-    // TODO instead of doing it for all methods, only instancie one method with identical name for the ordering
-    for (int method_idx : _methods_idx)
-    {
-        MethodDAGInfo dag_info;
-        dag_info.subtask_ids = htn.getMethodById(method_idx).getSubtasksIdx();
-        dag_info.ordering_constraints = htn.getMethodById(method_idx).getOrderingConstraints();
-        dags_info_per_method[method_idx] = dag_info;
-    }
-    CompressedDAG compressedDAG = compressDAGs(dags_info_per_method);
-
-    size_t num_children = compressedDAG.nodes.size();
-
-    // Create all the children based on the compressed DAG
-    for (int idx_child = 0; idx_child < compressedDAG.nodes.size(); ++idx_child)
-    {
-        const CompressedNode &compressed_node = compressedDAG.nodes[idx_child];
-
-        // Create the child node
-        PdtNode *child = new PdtNode(this);
-        _children.push_back(child);
-        // Indicate all the nodes that must be executed before this child
-        for (PdtNode *node : nodes_that_must_be_executed_before)
-        {
-            child->addNodeThatMustBeExecutedBefore(node);
-            node->addNodeThatMustBeExecutedAfter(child);
-        }
-        // Is there other children of this position that must be executed before this child?
-        for (const std::pair<int, int> &ordering : compressedDAG.edges)
-        {
-            if (ordering.second == idx_child)
-            {
-                Log::d("Child %d must be executed after child %d\n", ordering.second, ordering.first);
-                PdtNode *prev_child = _children[ordering.first];
-                child->addNodeThatMustBeExecutedBefore(prev_child);
-                prev_child->addNodeThatMustBeExecutedAfter(child);
-            }
-        }
-    }
-
-    if (num_children == 0)
-    {
-        // Only actions in this position, create a single child for them.
-        PdtNode *child = new PdtNode(this);
-        _children.push_back(child);
-        child->_can_be_first_child = true; // This child is the first and only.
-        child->_can_be_last_child = true;  // This child is the last and only.
-
-        for (PdtNode *node : nodes_that_must_be_executed_before)
-        {
-            child->addNodeThatMustBeExecutedBefore(node);
-            node->addNodeThatMustBeExecutedAfter(child);
-        }
-        for (int action_idx : _actions_idx)
-        {
-            child->addActionIdx(action_idx);
-            child->addParentOfAction(action_idx, action_idx, OpType::ACTION);
-        }
-    }
-
-    Log::d("Number of children: %zu\n", num_children);
-
-    int id_blank_action = htn.getBlankAction().getId();
-
-    // Now fill the children with the ops
-    for (int idx_child = 0; idx_child < num_children; ++idx_child)
-    {
-        const CompressedNode &compressed_node = compressedDAG.nodes[idx_child];
-        PdtNode *child = _children[idx_child];
-        bool is_first_child = idx_child == 0;
-
-        for (int method_idx : _methods_idx)
-        {
-            // Is this method_idx in the compressed node ? If so, which subtask?
-            auto it = compressed_node.original_nodes.find(method_idx);
-            if (it != compressed_node.original_nodes.end())
-            {
-                const Method &method = htn.getMethodById(method_idx);
-                Log::d("For parent method %s (%d)...\n", TOSTR(method), method_idx);
-                int method_subtask_idx = it->second;
-                child->_parent_method_idx_to_subtask_idx[method_idx] = method_subtask_idx;
-                int op_idx = method.getSubtasksIdx()[method_subtask_idx];
-                if (htn.isAbstractTask(op_idx))
-                {
-                    Log::d("  Subtask is the abstract task %s\n", TOSTR(htn.getAbstractTaskById(op_idx)));
-                    const AbstractTask &task = htn.getAbstractTaskById(op_idx);
-                    // Add all the methods of the abstract task to the j-th children
-                    for (int sub_method_idx : task.getDecompositionMethodsIdx())
-                    {
-                        child->addMethodIdx(sub_method_idx);
-                        child->addParentOfMethod(sub_method_idx, method_idx);
-                        Log::d("    At subtask %d, adding method %s (%d)\n", idx_child, TOSTR(htn.getMethodById(sub_method_idx)), sub_method_idx);
-                    }
-                }
-                else
-                {
-                    // Add the action to the j-th child
-                    child->addActionIdx(op_idx);
-                    child->addParentOfAction(op_idx, method_idx, OpType::METHOD);
-                    Log::d("    At subtask %d, adding action %s\n", idx_child, TOSTR(htn.getActionById(op_idx)));
-                }
-            }
-            else
-            {
-                // Add the blank action to the child
-                child->addActionIdx(id_blank_action);
-                child->addParentOfAction(id_blank_action, method_idx, OpType::METHOD);
-                Log::d("Adding blank action %s to child %d\n", TOSTR(htn.getActionById(id_blank_action)), idx_child);
-            }
-        }
-
-        // Add action repetition to the first child or blank action to the rest
-        if (is_first_child)
-        {
-            for (int action_idx : _actions_idx)
-            {
-                // child->addActionRepetitionIdx(action_idx);
-                child->addActionIdx(action_idx);
-                child->addParentOfAction(action_idx, action_idx, OpType::ACTION);
-                Log::d("Adding action repetition %s to child %d\n", TOSTR(htn.getActionById(action_idx)), idx_child);
-            }
-        }
-        else
-        {
-            for (int action_idx : _actions_idx)
-            {
-                child->addActionIdx(id_blank_action);
-                child->addParentOfAction(id_blank_action, action_idx, OpType::ACTION);
-                Log::d("Adding blank action %s to child %d\n", TOSTR(htn.getActionById(id_blank_action)), idx_child);
-            }
-        }
-    }
-}
-
 void PdtNode::expandPOWithBefore(HtnInstance &htn)
 {
     // Collect all the nodes that must be executed before the children nodes
@@ -482,9 +335,10 @@ void PdtNode::expandPOWithBefore(HtnInstance &htn)
     {
         // Log::i("Method in pos: %s\n", TOSTR(htn.getMethodById(method_idx)));
         int structure_id = htn.getMethodStructureId(method_idx);
-        if (structure_id == -1) {
+        if (structure_id == -1)
+        {
             Log::w("Warning: Could not find structure ID for method %d in PdtNode::expandPOWithBefore. Skipping.\n", method_idx);
-            continue; 
+            continue;
         }
 
         structure_to_method_ids[structure_id].push_back(method_idx);
@@ -494,27 +348,28 @@ void PdtNode::expandPOWithBefore(HtnInstance &htn)
             MethodDAGInfo dag_info;
             dag_info.ordering_constraints = htn.getCanonicalOrderingConstraintsForStructure(structure_id);
             int num_subtasks = htn.getNumSubtasksForStructure(structure_id);
-            
-            if (num_subtasks == -1) { // Error case from getter
-                 Log::w("Warning: Could not get num_subtasks for structure_id %d in PdtNode::expandPOWithBefore. Skipping structure.\n", structure_id);
+
+            if (num_subtasks == -1)
+            { // Error case from getter
+                Log::w("Warning: Could not get num_subtasks for structure_id %d in PdtNode::expandPOWithBefore. Skipping structure.\n", structure_id);
                 continue;
             }
-            if (htn.getCanonicalOrderingConstraintsForStructure(structure_id).empty() && num_subtasks > 0 && structure_id != -1) {
-                 // This check is for the case where getCanonicalOrderingConstraintsForStructure returns the static empty vector due to an error.
-                 // However, getNumSubtasksForStructure might have succeeded.
-                 // If num_subtasks > 0 but constraints are empty (and it wasn't a valid empty constraints case), it's an issue.
-                 // The getter for constraints already logs an error.
-                 // We might rely on num_subtasks being -1 if constraints also failed.
-                 // For now, let's assume if num_subtasks is valid, we proceed.
+            if (htn.getCanonicalOrderingConstraintsForStructure(structure_id).empty() && num_subtasks > 0 && structure_id != -1)
+            {
+                // This check is for the case where getCanonicalOrderingConstraintsForStructure returns the static empty vector due to an error.
+                // However, getNumSubtasksForStructure might have succeeded.
+                // If num_subtasks > 0 but constraints are empty (and it wasn't a valid empty constraints case), it's an issue.
+                // The getter for constraints already logs an error.
+                // We might rely on num_subtasks being -1 if constraints also failed.
+                // For now, let's assume if num_subtasks is valid, we proceed.
             }
-
 
             // compressDAGs uses subtask_ids.size(). The actual IDs are not used by compressDAGs itself.
             // It iterates `i` from `0` to `num_subtasks-1`.
             // The `original_nodes[structure_id_key] = i;` line means `i` (the 0-based index) is stored.
-            dag_info.subtask_ids.resize(num_subtasks); 
+            dag_info.subtask_ids.resize(num_subtasks);
             // Example of filling if needed: for(int i=0; i<num_subtasks; ++i) dag_info.subtask_ids[i] = i;
-            
+
             dags_info_per_structure[structure_id] = dag_info;
         }
     }
@@ -652,8 +507,9 @@ void PdtNode::expandPOWithBefore(HtnInstance &htn)
         for (int actual_method_idx : _methods_idx)
         {
             int structure_id_of_method = htn.getMethodStructureId(actual_method_idx);
-            if (structure_id_of_method == -1) {
-                 Log::w("Warning: PdtNode::expandPOWithBefore - Method %d has no structure_id. Skipping method for child ops.\n", actual_method_idx);
+            if (structure_id_of_method == -1)
+            {
+                Log::w("Warning: PdtNode::expandPOWithBefore - Method %d has no structure_id. Skipping method for child ops.\n", actual_method_idx);
                 continue;
             }
 
@@ -670,9 +526,9 @@ void PdtNode::expandPOWithBefore(HtnInstance &htn)
                 // Ensure subtask_idx_in_structure is valid for this specific method's subtasks
                 if (subtask_idx_in_structure < method.getSubtasksIdx().size())
                 {
-                    Log::d("For parent method %s (%d), using structure %d, subtask_index %d for child %d...\n", 
+                    Log::d("For parent method %s (%d), using structure %d, subtask_index %d for child %d...\n",
                            TOSTR(method), actual_method_idx, structure_id_of_method, subtask_idx_in_structure, idx_child);
-                    
+
                     child->_parent_method_idx_to_subtask_idx[actual_method_idx] = subtask_idx_in_structure;
                     int op_idx = method.getSubtasksIdx()[subtask_idx_in_structure];
 
@@ -684,7 +540,7 @@ void PdtNode::expandPOWithBefore(HtnInstance &htn)
                         {
                             child->addMethodIdx(sub_method_idx);
                             child->addParentOfMethod(sub_method_idx, actual_method_idx);
-                            Log::d("    Child %s: adding method %s (%d) from parent %s\n", 
+                            Log::d("    Child %s: adding method %s (%d) from parent %s\n",
                                    child->getName().c_str(), TOSTR(htn.getMethodById(sub_method_idx)), sub_method_idx, TOSTR(method));
                         }
                     }
@@ -692,13 +548,13 @@ void PdtNode::expandPOWithBefore(HtnInstance &htn)
                     {
                         child->addActionIdx(op_idx);
                         child->addParentOfAction(op_idx, actual_method_idx, OpType::METHOD);
-                        Log::d("    Child %s: adding action %s from parent %s\n", 
+                        Log::d("    Child %s: adding action %s from parent %s\n",
                                child->getName().c_str(), TOSTR(htn.getActionById(op_idx)), TOSTR(method));
                     }
                 }
                 else
                 {
-                     Log::e("Error: PdtNode::expandPOWithBefore - subtask_idx_in_structure %d out of bounds for method %s with %zu subtasks.\n",
+                    Log::e("Error: PdtNode::expandPOWithBefore - subtask_idx_in_structure %d out of bounds for method %s with %zu subtasks.\n",
                            subtask_idx_in_structure, TOSTR(method), method.getSubtasksIdx().size());
                     // Add blank action as a fallback
                     child->addActionIdx(id_blank_action);
@@ -721,17 +577,17 @@ void PdtNode::expandPOWithBefore(HtnInstance &htn)
         // These actions are considered to run "in parallel" or at the "beginning" of the decomposition.
         // If the current child can be a "first child" in the sequence of siblings, it processes these actions.
         // Otherwise, it gets blank actions for them.
-        if (is_first_child) 
+        if (is_first_child)
         {
             for (int action_idx : _actions_idx)
             {
                 child->addActionIdx(action_idx);
                 child->addParentOfAction(action_idx, action_idx, OpType::ACTION); // Parent is the action itself
-                Log::d("Child %s: Adding action repetition %s because it can be a first child\n", 
+                Log::d("Child %s: Adding action repetition %s because it can be a first child\n",
                        child->getName().c_str(), TOSTR(htn.getActionById(action_idx)));
             }
         }
-        else 
+        else
         {
             for (int action_idx : _actions_idx)
             {

@@ -142,9 +142,7 @@ public:
 
     size_t computeNumberOfChildren(HtnInstance &htn);
     void expand(HtnInstance &htn);
-    void expandPO(HtnInstance &htn, bool order_between_child);
     void expandPOWithBefore(HtnInstance &htn);
-    // void expandPO(HtnInstance &htn, std::vector<PdtNode *> &new_leaf_nodes);
     void createChildren(HtnInstance &htn);
     void addNodeThatMustBeExecutedBefore(PdtNode *node);
     void addNodeThatMustBeExecutedAfter(PdtNode *node);
