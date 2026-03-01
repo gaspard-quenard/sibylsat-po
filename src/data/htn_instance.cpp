@@ -86,7 +86,11 @@ std::optional<std::string> HtnInstance::groundProblem(const std::string &parsed_
     std::string options = "";
     if (_params.isNonzero("mutex"))
     {
-        options += "--invariants";
+        options += " --invariants";
+    }
+    if (_params.isNonzero("nsp"))
+    {
+        options += " --no-abstract-expansion";
     }
     std::string command = grounder_path.string() + " " + options + " " + parsed_problem_filepath + " " + output_filepath;
 

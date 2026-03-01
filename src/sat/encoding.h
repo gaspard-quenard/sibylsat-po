@@ -37,6 +37,7 @@ public:
     void initalEncode(PdtNode *root);
     void encode(std::vector<PdtNode *> &leaf_nodes);
     void encodePOWithBefore(std::vector<PdtNode *> &leaf_nodes);
+    void encodePOWithBeforeV2(std::vector<PdtNode *> &leaf_nodes);
 
     void writeFormula(std::string filename)
     {

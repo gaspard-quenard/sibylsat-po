@@ -63,6 +63,7 @@ void Parameters::setDefaults()
     setParam("nsp", "0");     // No split parameters
     setParam("removeMethodPrecAction", "0"); // Remove the special first subtask of the method which contains its preconditions and set instead the preconditions at the method level
     setParam("sibylsat", "0"); // Use the sibylsat expansion
+    setParam("po_v2", "0"); // Use the sibylsat expansion
 }
 
 void Parameters::printUsage()

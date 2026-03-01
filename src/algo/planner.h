@@ -24,6 +24,8 @@ private:
     const bool _partial_order_problem;
     const bool _sibylsat_expansion;
 
+    const bool _po_v2 = _htn.getParams().isNonzero("po_v2");
+
     std::vector<int> _leafs_overleafs_vars_to_encode;
     std::vector<int> _previous_nexts_nodes;
 

@@ -544,6 +544,533 @@ void Encoding::encodePOWithBefore(std::vector<PdtNode *> &leaf_nodes)
     _layer_idx++;
 }
 
+
+
+
+
+
+
+
+
+
+void Encoding::encodePOWithBeforeV2(std::vector<PdtNode *> &leaf_nodes)
+{
+
+    // Number of time steps is set to the number of leaf nodes.
+    size_t num_nodes = leaf_nodes.size();
+    _num_ts = num_nodes;
+
+    Log::i("Encoding Partial Order with Before Variables for %zu nodes...\n", num_nodes);
+
+    // --- Initialize _node_before_node Variables ---
+    // _node_before_node.clear();
+    // _node_before_node.resize(num_nodes); // Resize outer vector
+    // for (size_t i = 0; i < num_nodes; ++i)
+    // {
+    //     _node_before_node[i].resize(num_nodes, 0); // Resize inner vector, initialize with 0
+    //     for (size_t j = i + 1; j < num_nodes; ++j)
+    //     {
+    //         int var = VariableProvider::nextVar();
+    //         _node_before_node[i][j] = var;
+    //         if (_print_var_names)
+    //         {
+    //             // Use node indices (0 to num_nodes-1) directly in names
+    //             std::string var_name = "layer_" + std::to_string(_layer_idx) + "__node_" + leaf_nodes[i]->getName() + "__before__node_" + leaf_nodes[j]->getName();
+    //             Log::i("PVN: %d %s\n", var, var_name.c_str());
+    //         }
+    //     }
+    // }
+
+    _stats.beginTiming(TimingStage::ENCODING_BEFORE);
+    _stats.begin(STAGE_BEFORE_CLAUSES);
+
+    // --- Encode Ordering Constraints (Next AMO, Next=>Before, Transitivity, Hard Precedence) ---
+    for (int i = 0; i < num_nodes; ++i)
+    {
+        PdtNode *node_i = leaf_nodes[i];
+        int pos_i = i; // Use loop index which matches the vector indices
+
+        // --- Encode 'Next' AMO ---
+        // At most one predecessor chosen
+        std::vector<int> prev_node_to_current_node_vars;
+        for (const auto &[prev_node, ordering] : node_i->getPossiblePreviousNodes())
+        {
+            prev_node_to_current_node_vars.push_back(prev_node->getPossibleNextNodeVariable().at(node_i));
+        }
+        _stats.begin(STAGE_BEFORE_PREDECESSORS);
+        if (prev_node_to_current_node_vars.size() > 0)
+        {
+            _sat.addClause(prev_node_to_current_node_vars);
+        }
+        if (prev_node_to_current_node_vars.size() > 1)
+        {
+            encodeAtMostOne(prev_node_to_current_node_vars);
+        }
+        _stats.end(STAGE_BEFORE_PREDECESSORS);
+
+        // At most one successor chosen
+        std::vector<int> current_node_to_next_node_vars;
+        const auto &possible_next_nodes_map = node_i->getPossibleNextNodes();
+        const auto &next_node_var_map = node_i->getPossibleNextNodeVariable(); // Map for node_i
+
+        for (const auto &[next_node, ordering] : possible_next_nodes_map)
+        {
+            int next_node_i_node_k_var = next_node_var_map.at(next_node);
+            current_node_to_next_node_vars.push_back(next_node_i_node_k_var);
+            int pos_k = next_node->getPos(); // Get the actual position index of the successor
+
+            // --- Encode next => before ---
+            // int node_i_before_node_k_var = getBeforeLiteral(pos_i, pos_k);
+            int node_i_before_node_k_var = node_i->getBeforeNextNodeVar(next_node);
+            _sat.addClause(-next_node_i_node_k_var, node_i_before_node_k_var);
+
+            PdtNode *node_k = leaf_nodes[pos_k];
+            if (node_k->getPossibleNextNodes().find(node_i) != node_k->getPossibleNextNodes().end())
+            {
+                int next_node_k__node_i_var = node_k->getPossibleNextNodeVariable().at(node_i);
+                // If i is before k, then k cannot be a next node of i
+                _sat.addClause(-node_i_before_node_k_var, -next_node_k__node_i_var);
+            }
+
+            // --- Encode Transitivity ---
+            _stats.begin(STAGE_BEFORE_TRANSITIVITY);
+            // for (const auto &[node_a, ordering] : next_node->getPossibleNextNodes()) {
+            // For all other nodes 'a' (pos_a != pos_i)
+            
+            for (int a = 0; a < num_nodes; ++a)
+            {
+                if (a == i)
+                    continue;  // Skip self
+                int pos_a = a; // Use loop index
+                if (pos_a == pos_k)
+                    continue; // Skip k -> i -> k
+            
+
+                PdtNode *node_a = leaf_nodes[pos_a];
+
+                // If i cannot be executed after a or k cannot be executed before a, skip
+                if (node_a->getNodeThatMustBeExecutedBefore().find(node_i) != node_a->getNodeThatMustBeExecutedBefore().end() ||
+                    node_a->getNodeThatMustBeExecutedBefore().find(next_node) != node_a->getNodeThatMustBeExecutedBefore().end())
+                {
+                    continue;
+                }
+
+                // int node_a_before_node_i_var = getBeforeLiteral(pos_a, pos_i);
+                // int node_a_before_node_k_var = getBeforeLiteral(pos_a, pos_k);
+                int node_a_before_node_i_var = node_a->getBeforeNextNodeVar(node_i);
+                int node_a_before_node_k_var = node_a->getBeforeNextNodeVar(next_node);
+
+                if (node_a_before_node_i_var == -1 || node_a_before_node_k_var == -1)
+                {
+                    Log::i("Skip...\n");
+                    continue; // Skip if the before variable is not defined
+                }
+
+                // (a before i) AND next(i, k) => (a before k)
+                // _sat.addClause(-node_a_before_node_i_var, -next_node_i_node_k_var, node_a_before_node_k_var);
+                // (not a before i) AND next(i, k) => (not a before k)
+                _sat.addClause(node_a_before_node_i_var, -next_node_i_node_k_var, -node_a_before_node_k_var);
+
+                // Not sure if it is useful
+                // int node_i_before_node_k_var = getBeforeLiteral(pos_i, pos_k);
+                // (a before i) AND (i before k) => (a before k)
+                _sat.addClause(-node_a_before_node_i_var, -node_i_before_node_k_var, node_a_before_node_k_var);
+                // (not a before i) AND (i before k) => (not a before k)
+                // _sat.addClause(node_a_before_node_i_var, node_i_before_node_k_var, -node_a_before_node_k_var);
+            }
+            _stats.end(STAGE_BEFORE_TRANSITIVITY);
+        }
+        _stats.begin(STAGE_BEFORE_SUCCESSORS);
+        if (current_node_to_next_node_vars.size() > 0)
+        {
+            _sat.addClause(current_node_to_next_node_vars);
+        }
+        if (current_node_to_next_node_vars.size() > 1)
+        {
+            encodeAtMostOne(current_node_to_next_node_vars);
+        }
+        _stats.end(STAGE_BEFORE_SUCCESSORS);
+
+        // --- Encode Hard Precedence ---
+        for (PdtNode *prev_node : node_i->getNodeThatMustBeExecutedBefore())
+        {
+            int pos_prev = prev_node->getPos();
+            // int before_lit = getBeforeLiteral(pos_prev, pos_i);
+            int before_lit = prev_node->getBeforeNextNodeVar(node_i);
+            _sat.addClause(before_lit); // Must be true
+        }
+        for (PdtNode *next_node : node_i->getNodeThatMustBeExecutedAfter())
+        {
+            int pos_next = next_node->getPos();
+            // int before_lit = getBeforeLiteral(pos_i, pos_next);
+            int before_lit = node_i->getBeforeNextNodeVar(next_node);
+            _sat.addClause(before_lit); // Must be true
+        }
+    }
+
+    Log::i("Finished encoding 'before' constraints.\n");
+
+    // Finally, create a new var for leaf overleafs, that will be used for the FA
+    // int leaf_overleaf_var = VariableProvider::nextVar();
+    // if (_print_var_names)
+    // {
+    //     // Variable name: "layer_<layer_idx>__leaf_overleaf"
+    //     std::string var_name = "layer_" + std::to_string(_layer_idx) + "__leaf_overleaf";
+    //     Log::i("PVN: %d %s\n", leaf_overleaf_var, var_name.c_str());
+    // }
+    // _leaf_overleaf_vars.push_back(leaf_overleaf_var);
+
+    _stats.begin(STAGE_BEFORE_HIERARCHY);
+    // Encode special before variables
+    Log::i("Encoding special before variables...\n");
+    std::unordered_map<const PdtNode *, std::vector<const PdtNode *>> first_children_map;
+    std::unordered_map<const PdtNode *, std::vector<const PdtNode *>> children_map;
+    // Special hierarchy can be encoded. If next_pos_1__pos_2 is true, then the first child of pos_1 must be before the first child of pos_2
+    for (int i = 0; i < leaf_nodes.size(); ++i)
+    {
+        const PdtNode *node = leaf_nodes[i];
+        const PdtNode *parent = node->getParent();
+        children_map[parent].push_back(node);
+        if (node->canBeFirstChild())
+        {
+            first_children_map[parent].push_back(node);
+        }
+    }
+
+    for (const auto &[parent, first_children] : first_children_map)
+    {
+        for (const auto &[next_node, next_node_var] : parent->getPossibleNextNodeVariable())
+        {
+            const std::vector<const PdtNode *> &next_node_first_children = first_children_map[next_node];
+
+            // Get all the possible before variables
+            std::vector<int> before_vars;
+            for (const PdtNode *first_child : first_children)
+            {
+                for (const PdtNode *next_node_first_child : next_node_first_children)
+                {
+                    // Get the before variable for the first child of parent and the first child of next_node
+                    int before_var = first_child->getBeforeNextNodeVar(next_node_first_child);
+                    if (before_var != -1)
+                    {
+                        before_vars.push_back(before_var);
+                    }
+                }
+            }
+
+            int next_node_vars_2 = parent->getBeforeNextNodeVar(next_node);
+
+            // If the next node is true, then one of the before variables must be true
+            if (before_vars.size() > 0)
+            {
+                _sat.appendClause(-next_node_vars_2);
+                for (int before_var : before_vars)
+                {
+                    _sat.appendClause(before_var);
+                }
+                _sat.endClause();
+            }
+        }
+    }
+    Log::i("Finished encoding special before variables.\n");
+
+    int parent_overleaf_var = _leaf_overleaf_vars.size() > 0 ? _leaf_overleaf_vars.back() : -1;
+
+    // Encode special before variables no task overleaf
+    Log::i("Encoding special before variables no task overleaf...\n");
+    for (const auto &[parent, children] : children_map)
+    {
+        for (const auto &[next_node, next_node_var] : parent->getPossibleNextNodeVariable())
+        {
+            std::vector<const PdtNode *> &next_node_children = children_map[next_node];
+
+            int next_node_vars_2 = parent->getBeforeNextNodeVar(next_node);
+
+            for (const PdtNode *child : children)
+            {
+                for (const PdtNode *next_node_child : next_node_children)
+                {
+                    // Get the before variable for the first child of parent and the first child of next_node
+                    int before_var = child->getBeforeNextNodeVar(next_node_child);
+                    if (before_var != -1)
+                    {
+                        // If the next node is true, then one of the before variables must be true
+                        // Encode the clause: next_node_var AND no_leaf_overleaf => before_vars
+                        _sat.addClause(-next_node_vars_2, parent_overleaf_var, before_var);
+                    }
+                }
+            }
+        }
+    }
+    Log::i("Finished encoding special before variables no task overleaf.\n");
+
+    _stats.endTiming(TimingStage::ENCODING_BEFORE);
+    _stats.end(STAGE_BEFORE_HIERARCHY);
+    _stats.end(STAGE_BEFORE_CLAUSES);
+
+
+    _stats.beginTiming(TimingStage::ENCODING_MUTEXES);
+    _stats.begin(STAGE_MUTEX);
+    Log::i("Encoding mutexes...\n");
+    if (_encode_mutexes)
+    {
+        // Encode mutexes for all time steps
+        for (int t = 0; t < num_nodes; ++t)
+        {
+            const std::vector<int> &current_fact_vars = leaf_nodes[t]->getFactVariables();
+            // ENcode all groups
+            for (const std::vector<int> &group : _htn.getMutex().getMutexGroups())
+            {
+
+                std::vector<int> group_vars;
+                for (int pred_idx : group)
+                {
+                    // Get the variable for this predicate at this time step
+                    int var = current_fact_vars[pred_idx];
+                    group_vars.push_back(var);
+                }
+                // Encode the at-most-one constraint for this group
+                encodeAtMostOne(group_vars);
+            }
+        }
+    }
+    Log::i("Finished encoding mutexes.\n");
+    _stats.endTiming(TimingStage::ENCODING_MUTEXES);
+    _stats.end(STAGE_MUTEX);
+    
+
+
+    int leaf_overleaf_var = VariableProvider::nextVar();
+    if (_print_var_names)
+    {
+        // Variable name: "layer_<layer_idx>__leaf_overleaf"
+        std::string var_name = "layer_" + std::to_string(_layer_idx) + "__leaf_overleaf";
+        Log::i("PVN: %d %s\n", leaf_overleaf_var, var_name.c_str());
+    }
+    _leaf_overleaf_vars.push_back(leaf_overleaf_var);
+
+
+    for (int i = 0; i < leaf_nodes.size(); ++i)
+    {
+        // Log::i("Encode node %d/%d: %s\n", i, leaf_nodes.size(), TOSTR(*leaf_nodes[i]));
+        PdtNode *node = leaf_nodes[i];
+        const PdtNode *parent_node = node->getParent();
+        // int leaf_overleaf_var = node->getLeafOverleafVariable();
+
+        // action implies prim, method implies not prim
+        _stats.begin(STAGE_PRIMITIVENESS);
+        encodePrimitivenessOps(node->getActionAndVariables(), node->getMethodAndVariables(), node->getPrimVariable());
+        _stats.end(STAGE_PRIMITIVENESS);
+
+        // Encode the hierarchy of each ops
+        _stats.beginTiming(TimingStage::ENCODING_HIERARCHY);
+        _stats.begin(STAGE_EXPANSIONS);
+        encodeHierarchy(node, parent_node);
+        _stats.endTiming(TimingStage::ENCODING_HIERARCHY);
+        _stats.end(STAGE_EXPANSIONS);
+
+        std::unordered_map<int, std::unordered_set<int>> positive_effs_can_be_implied_by;
+        std::unordered_map<int, std::unordered_set<int>> negative_effs_can_be_implied_by;
+
+        const std::vector<int> &current_fact_vars = node->getFactVariables();
+
+        // Encode actions preconditions
+        _stats.beginTiming(TimingStage::ENCODING_PREC);
+        _stats.begin(STAGE_PREC);
+        for (const auto &[action_idx, action_var] : node->getActionAndVariables())
+        {
+            const Action &action = _htn.getActionById(action_idx);
+            for (int precondition_idx : action.getPreconditionsIdx())
+            {
+                // Action && _ts_to_leaf_node[t][j] => precondition
+                // in CNF:
+                // (not action_var or not _ts_to_leaf_node[t][j] or current_fact_vars[precondition_idx])
+                _sat.addClause(-action_var, current_fact_vars[precondition_idx]);
+                // _sat.addClause(-action_var, leaf_overleaf_var, current_fact_vars[precondition_idx]);
+            }
+        }
+
+        if (_encode_prec_and_effs_methods)
+        {
+            // Encode methods preconditions
+            for (const auto &[method_idx, method_var] : node->getMethodAndVariables())
+            {
+                const Method &method = _htn.getMethodById(method_idx);
+                for (int precondition_idx : method.getPreconditionsIdx())
+                {
+                    // Method && _ts_to_leaf_node[t][j] => precondition
+                    // in CNF:
+                    // (not method_var or not _ts_to_leaf_node[t][j] or current_fact_vars[precondition_idx])
+                    // _sat.addClause(-method_var, current_fact_vars[precondition_idx]);
+                    _sat.addClause(-method_var, leaf_overleaf_var, current_fact_vars[precondition_idx]); 
+                    // _sat.addClause(-method_var, leaf_overleaf_var, current_fact_vars[precondition_idx]);
+                }
+            }
+        }
+        _stats.endTiming(TimingStage::ENCODING_PREC);
+        _stats.end(STAGE_PREC);
+
+        _stats.beginTiming(TimingStage::ENCODING_EFF);
+        _stats.begin(STAGE_EFF);
+        
+
+        // Encode actions for each possible next action var
+        for (const auto &[next_node, next_node_var] : node->getPossibleNextNodeVariable())
+        {
+            // Encode actions for each possible ts
+            const std::vector<int> &next_fact_vars = next_node->getFactVariables();
+            for (const auto &[action_idx, action_var] : node->getActionAndVariables())
+            {
+                const Action &action = _htn.getActionById(action_idx);
+                for (int pos_effect_idx : action.getPosEffsIdx())
+                {
+                    // _sat.addClause(-action_var, -next_node_var, next_fact_vars[pos_effect_idx]);
+                    _sat.addClause(-action_var, -next_node_var, leaf_overleaf_var, next_fact_vars[pos_effect_idx]);
+                }
+                for (int neg_effect_idx : action.getNegEffsIdx())
+                {
+                    // _sat.addClause(-action_var, -next_node_var, -next_fact_vars[neg_effect_idx]);
+                    _sat.addClause(-action_var, -next_node_var, leaf_overleaf_var, -next_fact_vars[neg_effect_idx]);
+                }
+            }
+
+            if (_encode_prec_and_effs_methods)
+            {
+                // Encode methods for each possible next action var
+                for (const auto &[method_idx, method_var] : node->getMethodAndVariables())
+                {
+                    // Certified effects can only occurs if there is no leaf overleaf
+                    const Method &method = _htn.getMethodById(method_idx);
+                    for (int pos_effect_idx : method.getPosEffsIdx())
+                    {
+                        // _sat.addClause(-method_var, -next_node_var, next_fact_vars[pos_effect_idx]);
+                        _sat.addClause(-method_var, -next_node_var, leaf_overleaf_var, next_fact_vars[pos_effect_idx]);
+                    }
+                    for (int neg_effect_idx : method.getNegEffsIdx())
+                    {
+                        // _sat.addClause(-method_var, -next_node_var, -next_fact_vars[neg_effect_idx]);
+                        _sat.addClause(-method_var, -next_node_var, leaf_overleaf_var, -next_fact_vars[neg_effect_idx]);
+                    }
+                }
+            }
+        }
+        _stats.endTiming(TimingStage::ENCODING_EFF);
+        _stats.end(STAGE_EFF);
+
+        _stats.beginTiming(TimingStage::ENCODING_FIND_FA);
+        // Get the positive effects and negative effects of the actions
+        for (const auto &[action_idx, action_var] : node->getActionAndVariables())
+        {
+            const Action &action = _htn.getActionById(action_idx);
+            for (int pos_effect_idx : action.getPosEffsIdx())
+            {
+                positive_effs_can_be_implied_by[pos_effect_idx].insert(action_var);
+            }
+            for (int neg_effect_idx : action.getNegEffsIdx())
+            {
+                negative_effs_can_be_implied_by[neg_effect_idx].insert(action_var);
+            }
+        }
+
+        if (_encode_prec_and_effs_methods)
+        {
+            // Get the positive effects and negative effects of the methods
+            for (const auto &[method_idx, method_var] : node->getMethodAndVariables())
+            {
+                const Method &method = _htn.getMethodById(method_idx);
+                for (int pos_effect_idx : method.getPossPosEffsIdx())
+                {
+                    positive_effs_can_be_implied_by[pos_effect_idx].insert(method_var);
+                }
+                for (int neg_effect_idx : method.getPossNegEffsIdx())
+                {
+                    negative_effs_can_be_implied_by[neg_effect_idx].insert(method_var);
+                }
+            }
+        }
+
+        _stats.endTiming(TimingStage::ENCODING_FIND_FA);
+
+        _stats.beginTiming(TimingStage::ENCODING_FA);
+        _stats.begin(STAGE_FRAMEAXIOMS);
+        // Encode frame axioms
+        // Encode frame axioms for each possible ts
+        const int &prim_var = node->getPrimVariable();
+        for (const auto &[next_node, next_node_var] : node->getPossibleNextNodeVariable())
+        {
+            const std::vector<int> &next_fact_vars = next_node->getFactVariables();
+            for (int i = 0; i < _htn.getNumPredicates(); i++)
+            {
+                // If this predicate was true and become false, then either there is a method responsable for this change (so the position is non primtiive)
+                // Or an action must be responsible for this change:
+                // pred__t and not pred__t+1 => (non prim or negative effect of an action)
+                // In CNF:
+                // (not pred__t or pred__t+1 or non_prim or action_1_with_negative_effect or action_2_with_negative_effect)
+                _sat.appendClause(-current_fact_vars[i], next_fact_vars[i]);
+                _sat.appendClause(-next_node_var); // Check only for this node at this ts
+
+                if (!_encode_prec_and_effs_methods)
+                {
+                    _sat.appendClause(-prim_var);
+                }
+                // Is there a leaf overleaf ?
+                _sat.appendClause(leaf_overleaf_var);
+                if (negative_effs_can_be_implied_by.find(i) != negative_effs_can_be_implied_by.end())
+                {
+                    for (int action_var : negative_effs_can_be_implied_by.at(i))
+                    {
+                        _sat.appendClause(action_var);
+                    }
+                }
+                _sat.endClause();
+                // Do the same things if a predicate was false and become true
+                _sat.appendClause(current_fact_vars[i], -next_fact_vars[i]);
+                _sat.appendClause(-next_node_var); // Check only for this node at this ts
+
+                if (!_encode_prec_and_effs_methods)
+                {
+                    _sat.appendClause(-prim_var);
+                }
+                // Is there a leaf overleaf ?
+                _sat.appendClause(leaf_overleaf_var);
+                if (positive_effs_can_be_implied_by.find(i) != positive_effs_can_be_implied_by.end())
+                {
+                    for (int action_var : positive_effs_can_be_implied_by.at(i))
+                    {
+                        _sat.appendClause(action_var);
+                    }
+                }
+                _sat.endClause();
+            }
+        }
+        _stats.endTiming(TimingStage::ENCODING_FA);
+        _stats.end(STAGE_FRAMEAXIOMS);
+    }
+
+    _layer_idx++;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 void Encoding::initalEncode(PdtNode *root_node)
 {
     // Encoding the initial state

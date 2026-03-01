@@ -131,9 +131,9 @@ const EffectsInference::SubtaskOrderingInfo &EffectsInference::getOrderingInfo(i
 }
 
 void EffectsInference::transitiveClosureDFS(int start_node, int current_node,
-                                             const std::vector<std::vector<int>> &adj,
-                                             std::vector<bool> &visited,
-                                             std::unordered_set<int> &reachable)
+                                            const std::vector<std::vector<int>> &adj,
+                                            std::vector<bool> &visited,
+                                            std::unordered_set<int> &reachable)
 {
     visited[current_node] = true;
     if (start_node != current_node)
@@ -303,33 +303,33 @@ using CompGraph = std::vector<std::vector<int>>;
 
 namespace {
 
-static CompGraph buildCondensation(const std::vector<MethInfo> &MI,
-                                   const Tarjan &tarjan)
-{
-    const int C = (int)tarjan.comps.size();
-    CompGraph dag(C);
-    std::vector<char> mark(C, 0);
-
-    for (int v = 0; v < (int)MI.size(); ++v)
+    static CompGraph buildCondensation(const std::vector<MethInfo> &MI,
+                                       const Tarjan &tarjan)
     {
-        int srcC = tarjan.comp_of[v];
-        for (int w : MI[v].out)
-        {
-            int dstC = tarjan.comp_of[w];
-            if (srcC == dstC)
-                continue;
+        const int C = (int)tarjan.comps.size();
+        CompGraph dag(C);
+        std::vector<char> mark(C, 0);
 
-            if (!mark[dstC])
+        for (int v = 0; v < (int)MI.size(); ++v)
+        {
+            int srcC = tarjan.comp_of[v];
+            for (int w : MI[v].out)
             {
-                dag[srcC].push_back(dstC);
-                mark[dstC] = 1;
+                int dstC = tarjan.comp_of[w];
+                if (srcC == dstC)
+                    continue;
+
+                if (!mark[dstC])
+                {
+                    dag[srcC].push_back(dstC);
+                    mark[dstC] = 1;
+                }
             }
+            for (int dst : dag[srcC])
+                mark[dst] = 0;
         }
-        for (int dst : dag[srcC])
-            mark[dst] = 0;
+        return dag;
     }
-    return dag;
-}
 
 } // anonymous namespace
 
@@ -705,7 +705,7 @@ void EffectsInference::applyMutexRefinementForAllMethodsBits(Mutex &mutex)
                         ++total_removed;
                     }
                 }
-            }
+            } 
         });
     }
 
@@ -737,7 +737,7 @@ void EffectsInference::refineAllPossibleNegativeEffectsWithMutexAndPrecMethodsBi
                     if (q != pred)
                         dropMask.set(q);
                 }
-            }
+            } 
         });
 
         // Remove negative effects in the mask
@@ -884,6 +884,9 @@ void EffectsInference::calculateAllMethodsPrecsAndEffs(std::vector<Method> &meth
     }
 
     Log::i("Finished calculating all methods preconditions and effects. Set all values in the methods.\n");
+
+    const bool po_v2 = _instance.getParams().isNonzero("po_v2");
+
     for (int i = 0; i < methods.size(); i++)
     {
         Method &method = methods[i];
@@ -900,7 +903,88 @@ void EffectsInference::calculateAllMethodsPrecsAndEffs(std::vector<Method> &meth
         if (_preconditions_cache.count(i))
         {
             for (const int &precondition : _preconditions_cache.at(i))
-                method.addPreconditionIdx(precondition);
+            {
+                if (po_v2)
+                {
+                    // Is it already in the precondition of the method ?
+                    if (method.getPreconditionsIdx().count(precondition) > 0)
+                    {
+                        continue; // skip it, it's already a precondition
+                    }
+                    method.addIntermediatePreconditionIdx(precondition);
+                }
+                else
+                {
+                    method.addPreconditionIdx(precondition);
+                }
+            }
+        }
+    }
+
+    if (po_v2)
+    {
+        Log::i("Set intermediate effects for all methods...\n");
+        int bar = 0;
+        for (Method &method : methods)
+        {
+            Log::i("%i/%i\n", bar++, methods.size());
+            Log::i("For method %s\n", method.getName().c_str());
+
+
+            std::unordered_set<int> m_seen;
+            std::unordered_set<int> a_seen;
+            std::queue<int> q;
+            std::unordered_set<int> poss_intermediate_pos_effets;
+            std::unordered_set<int> poss_intermediate_neg_effets;
+            q.push(method.getId());
+            m_seen.insert(method.getId());
+            while (!q.empty())
+            {
+                int method_id = q.front();
+                q.pop();
+                // Iterate over all subtasks of the method
+                const Method &m = methods[method_id];
+                for (int subtask_id : m.getSubtasksIdx())
+                {
+                    // Is it an abstract task ?
+                    if (_instance.isAbstractTask(subtask_id))
+                    {
+                        // Get all the methods that can accomplish this abstract task
+                        const AbstractTask &at = _instance.getAbstractTaskById(subtask_id);
+                        for (int sub_method_idx : at.getDecompositionMethodsIdx())
+                        {
+                            // Have we already seen this method ?
+                            if (m_seen.count(sub_method_idx))
+                                continue;
+                            // Add it to the queue to be process later
+                            q.push(sub_method_idx);
+                            m_seen.insert(sub_method_idx);
+                        }
+                    }
+                    // It is an action
+                    else
+                    {
+                        // have we seen this action ?
+                        if (a_seen.count(subtask_id))
+                            continue;
+                        const Action &a = _instance.getActionById(subtask_id);
+                        Log::i("  Action %s is reachable\n", a.getName().c_str());
+                        // Add the pos effect of this action into positive possible effects
+                        for (int action_pos_eff_idx : a.getPosEffsIdx())
+                        {
+                            poss_intermediate_pos_effets.insert(action_pos_eff_idx);
+                        }
+                        // And neg effects of this actions into negative possible effects
+                        for (int action_neg_eff_idx : a.getNegEffsIdx())
+                        {
+                            poss_intermediate_neg_effets.insert(action_neg_eff_idx);
+                        }
+                    }
+                }
+
+                method.setIntermediatePositiveEffects(poss_intermediate_pos_effets);
+                method.setIntermediateNegativeEffects(poss_intermediate_neg_effets);
+            }
         }
     }
 
@@ -914,6 +998,7 @@ void EffectsInference::calculateAllMethodsPrecsAndEffs(std::vector<Method> &meth
 
 void EffectsInference::printAllMethodPrecsAndEffs() const
 {
+    const bool po_v2 = _instance.getParams().isNonzero("po_v2");
     Log::i("Printing all methods preconditions and effects:\n");
     for (int i = 0; i < _instance.getNumMethods(); ++i)
     {
@@ -923,21 +1008,40 @@ void EffectsInference::printAllMethodPrecsAndEffs() const
         for (const int &prec : method.getPreconditionsIdx())
             Log::i("    %s\n", TOSTR(_instance.getPredicateById(prec)));
 
-        Log::i("  Possible Positive Effects (%d):\n", method.getPossPosEffsIdx().size());
-        for (const int &eff : method.getPossPosEffsIdx())
-            Log::i("    %s\n", TOSTR(_instance.getPredicateById(eff)));
+        if (po_v2)
+        {
+            Log::i("  Intermediate Preconditions (%d):\n", method.getIntermediatePreconditionsIdx().size());
+            for (const int &prec : method.getIntermediatePreconditionsIdx())
+                Log::i("    %s\n", TOSTR(_instance.getPredicateById(prec)));
 
-        Log::i("  Possible Negative Effects (%d):\n", method.getPossNegEffsIdx().size());
-        for (const int &eff : method.getPossNegEffsIdx())
-            Log::i("    %s\n", TOSTR(_instance.getPredicateById(eff)));
+            // Print all intermediate effects
+            Log::i("  Intermediate Positive Effects (%d):\n", method.getIntermediatePosEffsIdx().size());
+            for (const int &eff : method.getIntermediatePosEffsIdx())
+                Log::i("    %s\n", TOSTR(_instance.getPredicateById(eff)));
 
-        Log::i("  Certified Positive Effects (%d):\n", method.getPosEffsIdx().size());
-        for (const int &eff : method.getPosEffsIdx())
-            Log::i("    %s\n", TOSTR(_instance.getPredicateById(eff)));
+            Log::i("  Intermediate Negative Effects (%d):\n", method.getIntermediateNegEffsIdx().size());
+            for (const int &eff : method.getIntermediateNegEffsIdx())
+                Log::i("    %s\n", TOSTR(_instance.getPredicateById(eff)));
+        }
 
-        Log::i("  Certified Negative Effects (%d):\n", method.getNegEffsIdx().size());
-        for (const int &eff : method.getNegEffsIdx())
-            Log::i("    %s\n", TOSTR(_instance.getPredicateById(eff)));
+        else {
+
+            Log::i("  Possible Positive Effects (%d):\n", method.getPossPosEffsIdx().size());
+            for (const int &eff : method.getPossPosEffsIdx())
+                Log::i("    %s\n", TOSTR(_instance.getPredicateById(eff)));
+
+            Log::i("  Possible Negative Effects (%d):\n", method.getPossNegEffsIdx().size());
+            for (const int &eff : method.getPossNegEffsIdx())
+                Log::i("    %s\n", TOSTR(_instance.getPredicateById(eff)));
+
+            Log::i("  Certified Positive Effects (%d):\n", method.getPosEffsIdx().size());
+            for (const int &eff : method.getPosEffsIdx())
+                Log::i("    %s\n", TOSTR(_instance.getPredicateById(eff)));
+
+            Log::i("  Certified Negative Effects (%d):\n", method.getNegEffsIdx().size());
+            for (const int &eff : method.getNegEffsIdx())
+                Log::i("    %s\n", TOSTR(_instance.getPredicateById(eff)));
+        }
 
         Log::i("\n");
     }

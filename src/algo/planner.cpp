@@ -111,7 +111,11 @@ int Planner::findPlan()
         Log::i("  Encoding...\n");
         // Encode the new leaf nodes
         _stats.beginTiming(TimingStage::ENCODING);
-        if (_partial_order_problem)
+
+        if (_po_v2) {
+            _enc.encodePOWithBeforeV2(new_leaf_nodes);
+        }
+        else if (_partial_order_problem)
         {
             _enc.encodePOWithBefore(new_leaf_nodes);
         }
