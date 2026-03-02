@@ -107,6 +107,7 @@ const std::string PdtNode::getPositionString() const
 void PdtNode::assignSatVariables(const HtnInstance &htn, const bool print_var_names, const bool is_po)
 {
     const int num_predicates = htn.getNumPredicates();
+    const bool po_v2 = htn.getParams().isNonzero("po_v2");
 
     // Assign a variable to each method
     for (int method_idx : _methods_idx)
@@ -151,10 +152,9 @@ void PdtNode::assignSatVariables(const HtnInstance &htn, const bool print_var_na
     // If we are the first child of the parent, we have the same fact variables as the parent
     // bool first_child = _parent != nullptr && _parent->_children[0] == this;
     bool first_child = _parent != nullptr && _offset == 0;
-    if (first_child && !is_po)
-    // if ((first_child && !is_po) || (is_po && _must_be_first_child))
+    // if (first_child && !is_po)
+    if ((first_child && !is_po) || (is_po && po_v2 && _must_be_first_child))
     {
-        Log::i("ICI\n");
         _fact_variables = _parent->_fact_variables;
     }
     else

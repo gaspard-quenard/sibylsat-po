@@ -46,7 +46,7 @@ PATH_BENCHMARKS = [
 ]
 
 
-planner_config = "./build/treerex {domain_path} {problem_path} -po -sibylsat -mutex"
+planner_config = "./build/treerex {domain_path} {problem_path} -po -sibylsat -mutex -po_v2 -removeMethodPrecAction"
 
 
 if __name__ == "__main__":

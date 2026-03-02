@@ -928,7 +928,7 @@ void EffectsInference::calculateAllMethodsPrecsAndEffs(std::vector<Method> &meth
         for (Method &method : methods)
         {
             Log::i("%i/%i\n", bar++, methods.size());
-            Log::i("For method %s\n", method.getName().c_str());
+            // Log::i("For method %s\n", method.getName().c_str());
 
 
             std::unordered_set<int> m_seen;
@@ -968,7 +968,7 @@ void EffectsInference::calculateAllMethodsPrecsAndEffs(std::vector<Method> &meth
                         if (a_seen.count(subtask_id))
                             continue;
                         const Action &a = _instance.getActionById(subtask_id);
-                        Log::i("  Action %s is reachable\n", a.getName().c_str());
+                        // Log::i("  Action %s is reachable\n", a.getName().c_str());
                         // Add the pos effect of this action into positive possible effects
                         for (int action_pos_eff_idx : a.getPosEffsIdx())
                         {
@@ -979,16 +979,18 @@ void EffectsInference::calculateAllMethodsPrecsAndEffs(std::vector<Method> &meth
                         {
                             poss_intermediate_neg_effets.insert(action_neg_eff_idx);
                         }
+                        a_seen.insert(subtask_id);
                     }
                 }
-
-                method.setIntermediatePositiveEffects(poss_intermediate_pos_effets);
-                method.setIntermediateNegativeEffects(poss_intermediate_neg_effets);
             }
+
+            method.setIntermediatePositiveEffects(poss_intermediate_pos_effets);
+            method.setIntermediateNegativeEffects(poss_intermediate_neg_effets);
+
         }
     }
 
-    printAllMethodPrecsAndEffs();
+    // printAllMethodPrecsAndEffs();
 
     Log::i("Done !\n");
     Log::i("Cleared caches.\n");

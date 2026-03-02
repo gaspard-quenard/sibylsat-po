@@ -396,6 +396,9 @@ void Encoding::encodePOWithBefore(std::vector<PdtNode *> &leaf_nodes)
                     // in CNF:
                     // (not method_var or not _ts_to_leaf_node[t][j] or current_fact_vars[precondition_idx])
                     // _sat.addClause(-method_var, current_fact_vars[precondition_idx]);
+
+
+                    // Can remove leaf_task_overleaf if we only get the initial preconditions of the method (and not the inferred preconditions, since those can suppose a task overleaf, and be contraditory, e.g PCP 01)
                     _sat.addClause(-method_var, leaf_overleaf_var, current_fact_vars[precondition_idx]); 
                     // _sat.addClause(-method_var, leaf_overleaf_var, current_fact_vars[precondition_idx]);
                 }
@@ -902,7 +905,7 @@ void Encoding::encodePOWithBeforeV2(std::vector<PdtNode *> &leaf_nodes)
                     // in CNF:
                     // (not method_var or not _ts_to_leaf_node[t][j] or current_fact_vars[precondition_idx])
                     // _sat.addClause(-method_var, current_fact_vars[precondition_idx]);
-                    _sat.addClause(-method_var, leaf_overleaf_var, current_fact_vars[precondition_idx]); 
+                    _sat.addClause(-method_var, /*leaf_overleaf_var,*/ current_fact_vars[precondition_idx]); 
                     // _sat.addClause(-method_var, leaf_overleaf_var, current_fact_vars[precondition_idx]);
                 }
             }
@@ -978,11 +981,11 @@ void Encoding::encodePOWithBeforeV2(std::vector<PdtNode *> &leaf_nodes)
             for (const auto &[method_idx, method_var] : node->getMethodAndVariables())
             {
                 const Method &method = _htn.getMethodById(method_idx);
-                for (int pos_effect_idx : method.getPossPosEffsIdx())
+                for (int pos_effect_idx : method.getIntermediatePosEffsIdx())
                 {
                     positive_effs_can_be_implied_by[pos_effect_idx].insert(method_var);
                 }
-                for (int neg_effect_idx : method.getPossNegEffsIdx())
+                for (int neg_effect_idx : method.getIntermediateNegEffsIdx())
                 {
                     negative_effs_can_be_implied_by[neg_effect_idx].insert(method_var);
                 }

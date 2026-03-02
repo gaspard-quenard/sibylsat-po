@@ -56,6 +56,8 @@ int Planner::findPlan()
             }
         }
 
+        Log::i("Number of leaf nodes: %d\n", new_leaf_nodes.size());
+
         if (_partial_order_problem)
         {
             Log::i("  Adding ordering constraints between no sibling nodes...\n");
