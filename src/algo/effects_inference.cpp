@@ -936,6 +936,7 @@ void EffectsInference::calculateAllMethodsPrecsAndEffs(std::vector<Method> &meth
             std::queue<int> q;
             std::unordered_set<int> poss_intermediate_pos_effets;
             std::unordered_set<int> poss_intermediate_neg_effets;
+            std::unordered_set<int> all_possible_precs;
             q.push(method.getId());
             m_seen.insert(method.getId());
             while (!q.empty())
@@ -944,6 +945,14 @@ void EffectsInference::calculateAllMethodsPrecsAndEffs(std::vector<Method> &meth
                 q.pop();
                 // Iterate over all subtasks of the method
                 const Method &m = methods[method_id];
+
+                // Add the precondition of this method into all possible preconditions of the method
+                for (int prec_idx : m.getPreconditionsIdx())
+                {
+                    all_possible_precs.insert(prec_idx);
+                }
+
+
                 for (int subtask_id : m.getSubtasksIdx())
                 {
                     // Is it an abstract task ?
@@ -979,6 +988,10 @@ void EffectsInference::calculateAllMethodsPrecsAndEffs(std::vector<Method> &meth
                         {
                             poss_intermediate_neg_effets.insert(action_neg_eff_idx);
                         }
+                        for (int action_prec_idx : a.getPreconditionsIdx())
+                        {
+                            all_possible_precs.insert(action_prec_idx);
+                        }
                         a_seen.insert(subtask_id);
                     }
                 }
@@ -986,6 +999,7 @@ void EffectsInference::calculateAllMethodsPrecsAndEffs(std::vector<Method> &meth
 
             method.setIntermediatePositiveEffects(poss_intermediate_pos_effets);
             method.setIntermediateNegativeEffects(poss_intermediate_neg_effets);
+            method.setAllPossiblePrecs(all_possible_precs);
 
         }
     }

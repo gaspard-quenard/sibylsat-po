@@ -25,6 +25,7 @@ private:
     std::unordered_set<int> _poss_neg_effs_idx;
 
 
+    std::unordered_set<int> _all_poss_precs; // The union of all the preconditions of the method, including the preconditions of the method + all the preconditions of the subtasks (recursively) 
     std::unordered_set<int> _intermediate_preconditions_idx; // Preconditions that are not preconditions of the first subtask but are still required by other task which are not subtasks of the method
     std::unordered_set<int> _intermediate_pos_effs_idx;     // ANY possible pos effects that the method can produce (even intermediates one that will be removed by a later subtask)
     std::unordered_set<int> _intermediate_neg_effs_idx;     // ANY possible neg effects that the method can produce (even intermediates one that will be removed by a later subtask)
@@ -72,12 +73,14 @@ public:
     void setIntermediatePreconditions(std::unordered_set<int> intermediate_preconditions_idx) { _intermediate_preconditions_idx = intermediate_preconditions_idx; }
     void setIntermediatePositiveEffects(std::unordered_set<int> intermediate_pos_effs_idx) { _intermediate_pos_effs_idx = intermediate_pos_effs_idx; }
     void setIntermediateNegativeEffects(std::unordered_set<int> intermediate_neg_effs_idx) { _intermediate_neg_effs_idx = intermediate_neg_effs_idx; }
+    void setAllPossiblePrecs(std::unordered_set<int> all_poss_precs) { _all_poss_precs = all_poss_precs; }
 
     const std::unordered_set<int> &getPreconditionsIdx() const { return _preconditions_idx; }
     const std::unordered_set<int> &getPosEffsIdx() const { return _pos_effs_idx; }
     const std::unordered_set<int> &getNegEffsIdx() const { return _neg_effs_idx; }
     const std::unordered_set<int> &getPossPosEffsIdx() const { return _poss_pos_effs_idx; }
     const std::unordered_set<int> &getPossNegEffsIdx() const { return _poss_neg_effs_idx; }
+    const std::unordered_set<int> &getAllPossiblePrecs() const { return _all_poss_precs; }
 
     const std::unordered_set<int> &getIntermediatePreconditionsIdx() const { return _intermediate_preconditions_idx; }
     const std::unordered_set<int> &getIntermediatePosEffsIdx() const { return _intermediate_pos_effs_idx; }

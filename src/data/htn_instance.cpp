@@ -35,7 +35,7 @@ HtnInstance::HtnInstance(Parameters &params) : _params(params), _stats(Statistic
 
     loadGroundedProblem(*grounded_problem);
 
-    if (_params.isNonzero("sibylsat"))
+    if (_params.isNonzero("sibylsat") || _params.isNonzero("indepPos"))
     {
         if (!_partial_order_problem)
         {

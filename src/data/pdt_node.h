@@ -82,6 +82,10 @@ private:
     std::unordered_map<PdtNode *, OrderingConstrains> _possible_previous_nodes;
     std::unordered_map<PdtNode *, int> _possible_next_node_variable;
 
+    std::unordered_set<int> _full_poss_pos_effs;
+    std::unordered_set<int> _full_poss_neg_effs;
+    std::unordered_set<int> _full_poss_precs;
+
     std::string _name;
 
     const PdtNode *_parent;
@@ -209,6 +213,12 @@ public:
         next_node->_possible_previous_nodes[this] = ordering;
     }
 
+    void removePossibleNextNode(PdtNode *next_node)
+    {
+        _possible_next_nodes.erase(next_node);
+        next_node->_possible_previous_nodes.erase(this);
+    }
+
     const int getParentMethodIdxToSubtaskIdx(int parent_method_idx) const
     {
         if (_parent_method_idx_to_subtask_idx.find(parent_method_idx) == _parent_method_idx_to_subtask_idx.end())
@@ -243,6 +253,61 @@ public:
     }
 
     void makeOrderingNoSibling();
+
+
+    void computeFullPrecsAndEffs(HtnInstance &htn) {
+        for (int method_idx : _methods_idx) {
+            // Union the full possible preconditions and effects of all methods represented by this node.
+            // (Methods that share the same structure and position have the same ordering constraints, so we can union them safely.)
+            const Method &m = htn.getMethodById(method_idx);
+            _full_poss_precs.insert(m.getAllPossiblePrecs().begin(), m.getAllPossiblePrecs().end());
+            _full_poss_pos_effs.insert(m.getIntermediatePosEffsIdx().begin(), m.getIntermediatePosEffsIdx().end());
+            _full_poss_neg_effs.insert(m.getIntermediateNegEffsIdx().begin(), m.getIntermediateNegEffsIdx().end());
+        }
+        for (int action_idx : _actions_idx) {
+            const Action &a = htn.getActionById(action_idx);
+            for (int action_prec_idx : a.getPreconditionsIdx())
+            {
+                _full_poss_precs.insert(action_prec_idx);
+            }
+            for (int action_pos_eff_idx : a.getPosEffsIdx())
+            {
+                _full_poss_pos_effs.insert(action_pos_eff_idx);
+            }
+            for (int action_neg_eff_idx : a.getNegEffsIdx())
+            {
+                _full_poss_neg_effs.insert(action_neg_eff_idx);
+            }
+        }
+    }
+    void clearFullPrecsAndEffs()
+    {
+        _full_poss_precs.clear();
+        _full_poss_pos_effs.clear();
+        _full_poss_neg_effs.clear();
+    }
+
+    bool isIndependentWith(PdtNode &other) {
+        // Independent, if the full possible effects of one node do not intersect with the full possible preconditions of the other node (and vice versa).
+        // + the pos effects of one node do not intersect with the neg effects of the other node (and vice versa).
+        // + the neg effects of one node do not intersect with the pos effects of the other node (and vice versa).
+        for (int pos_eff : _full_poss_pos_effs) {
+            if (other._full_poss_precs.count(pos_eff) > 0 || other._full_poss_neg_effs.count(pos_eff) > 0) {
+                return false;
+            }
+        }
+        for (int neg_eff : _full_poss_neg_effs) {
+            if (other._full_poss_precs.count(neg_eff) > 0 || other._full_poss_pos_effs.count(neg_eff) > 0) {
+                return false;
+            }
+        }
+        for (int prec : _full_poss_precs) {
+            if (other._full_poss_pos_effs.count(prec) > 0 || other._full_poss_neg_effs.count(prec) > 0) {
+                return false;
+            }
+        }
+        return true;
+    }
 };
 
 #endif // PDT_NODE_H

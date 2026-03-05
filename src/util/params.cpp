@@ -64,6 +64,8 @@ void Parameters::setDefaults()
     setParam("removeMethodPrecAction", "0"); // Remove the special first subtask of the method which contains its preconditions and set instead the preconditions at the method level
     setParam("sibylsat", "0"); // Use the sibylsat expansion
     setParam("po_v2", "0"); // Use the sibylsat expansion
+    setParam("indepPos", "0"); // If two position can be independant, (Union of prec/eff of one position is disjoint with the union of prec/eff of the other position) and both of them has the other has possible next, we remove an possible ordering between them (i.e. we indicate next_pos2_pos1 = false, so only next_pos1_pos2 can be true).
+    setParam("D", "50"); // Max depth of expansion
 }
 
 void Parameters::printUsage()

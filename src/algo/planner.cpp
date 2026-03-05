@@ -23,7 +23,7 @@ int Planner::findPlan()
 
     // Run main loop
     bool solved = false;
-    int max_depth = 50;
+    int max_depth = _htn.getParams().getIntParam("D");
     int current_depth = 0;
     std::vector<PdtNode *> new_leaf_nodes;
     while (!solved && current_depth < max_depth)
@@ -65,6 +65,69 @@ int Planner::findPlan()
             {
                 node->makeOrderingNoSibling();
             }
+
+            if (_indep_pos)
+            {
+                Log::i("  Removing ordering constraints between independent nodes...\n");
+
+                // First, compute for each node the full set of possible preconditions and effects
+                Log::i("Computing full possible preconditions and effects for each node...\n");
+                for (PdtNode *node : new_leaf_nodes)
+                {
+                    node->computeFullPrecsAndEffs(_htn);
+                }
+
+                int total_number_of_independant_found = 0;
+
+
+                Log::i("Done ! Assigning order between independent nodes...\n");
+                for (PdtNode *node : new_leaf_nodes)
+                {
+                    int current_node_idx = node->getPos();
+                    // Get all the next nodes of the current node
+                    std::vector<PdtNode*> next_nodes_independants;
+                    int num_independent_next_nodes = 0;
+                    int num_both_way_next_nodes = 0;
+                    // Log::i("Node at pos %d has %d possible next nodes before filtering:\n", current_node_idx, (int)node->getPossibleNextNodes().size());
+                    for (const auto &[next_node, _] : node->getPossibleNextNodes())
+                    {
+
+                        // If the pos is infererior to this node, pass (already done when we were at this node)
+                        if (next_node->getPos() < current_node_idx) continue;
+
+                        // Does this next node can have the current node as possible next node ?
+                        if (next_node->getPossibleNextNodes().count(node) > 0)
+                        {
+                            num_both_way_next_nodes++;
+                            // Check if the two nodes are independent (no possible interaction between them)
+                            if (node->isIndependentWith(*next_node))
+                            {
+                                num_independent_next_nodes++;
+                                total_number_of_independant_found++;
+                                Log::i("  Node %s is independent with next node %s\n", TOSTR(*node), TOSTR(*next_node));
+
+                                next_nodes_independants.push_back(next_node);
+                            }
+                        }
+                    }
+                    Log::i("Node at pos %d has %d next nodes. From which %d are independent and %d are both way:\n", current_node_idx, (int)node->getPossibleNextNodes().size(), num_independent_next_nodes, num_both_way_next_nodes);
+
+                    for (PdtNode* next_node : next_nodes_independants)
+                    {
+                        // Remove the possible ordering between the two nodes (we can choose to execute one before the other, or the opposite)
+                        next_node->removePossibleNextNode(node);
+                    }
+                }
+
+                // Finally, clear the full possible precs/effects for each node to free memory (not needed anymore)
+                for (PdtNode *node : new_leaf_nodes)
+                {
+                    node->clearFullPrecsAndEffs();  
+                }
+
+                Log::i("Done ! Total number of independent nodes found: %d\n", total_number_of_independant_found);
+            }
+            
         }
 
         _stats.endTiming(TimingStage::EXPANSION);

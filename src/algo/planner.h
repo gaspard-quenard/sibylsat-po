@@ -25,6 +25,7 @@ private:
     const bool _sibylsat_expansion;
 
     const bool _po_v2 = _htn.getParams().isNonzero("po_v2");
+    const bool _indep_pos = _htn.getParams().isNonzero("indepPos");
 
     std::vector<int> _leafs_overleafs_vars_to_encode;
     std::vector<int> _previous_nexts_nodes;
