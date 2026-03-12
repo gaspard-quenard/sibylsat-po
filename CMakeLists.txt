@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.11.4)
-project (treerex)
+project (sibylsat)
 
 set(CMAKE_CXX_STANDARD 20)
 
@@ -15,10 +15,10 @@ endif()
 
 set(MY_DEFINITIONS IPASIRSOLVER=\"${IPASIRSOLVER}\")
 if(CMAKE_BUILD_TYPE MATCHES DEBUG)
-    set(MY_DEFINITIONS ${MY_DEFINITIONS} TREEREX_VERSION=\"dbg-${IPASIRSOLVER}\")
+    set(MY_DEFINITIONS ${MY_DEFINITIONS} SIBYLSAT_VERSION=\"dbg-${IPASIRSOLVER}\")
     set(MY_DEBUG_OPTIONS "-rdynamic -g -ggdb") 
 else()
-    set(MY_DEFINITIONS ${MY_DEFINITIONS} TREEREX_VERSION=\"rls-${IPASIRSOLVER}\")
+    set(MY_DEFINITIONS ${MY_DEFINITIONS} SIBYLSAT_VERSION=\"rls-${IPASIRSOLVER}\")
     set(MY_DEBUG_OPTIONS "-rdynamic -g -ggdb") 
     #set(BASE_COMPILEFLAGS -flto)
 endif()
@@ -68,10 +68,10 @@ add_compile_definitions("PROJECT_ROOT_DIR=${CMAKE_SOURCE_DIR}")
 
 # Executable
 
-add_executable(treerex src/main.cpp)
-target_include_directories(treerex PRIVATE ${BASE_INCLUDES})
-target_compile_options(treerex PRIVATE ${BASE_COMPILEFLAGS})
-target_compile_definitions(treerex PRIVATE ${MY_DEFINITIONS})
+add_executable(sibylsat-po src/main.cpp)
+target_include_directories(sibylsat-po PRIVATE ${BASE_INCLUDES})
+target_compile_options(sibylsat-po PRIVATE ${BASE_COMPILEFLAGS})
+target_compile_definitions(sibylsat-po PRIVATE ${MY_DEFINITIONS})
 
 if("${SOLVERLIBS}" MATCHES ".*dummyfuncs.*")
     # "dummyfuncs" library for unimplemented extra IPASIR functions
@@ -80,12 +80,12 @@ if("${SOLVERLIBS}" MATCHES ".*dummyfuncs.*")
     )
 endif()
 if("${IPASIRSOLVER}" STREQUAL "uwrmaxsat")
-    target_link_libraries(treerex lotane ${BASE_LIBS} ${SOLVERLIBS})
+    target_link_libraries(sibylsat-po lotane ${BASE_LIBS} ${SOLVERLIBS})
 else()
     if("${SOLVERLIBS}" MATCHES ".*[A-Za-z].*")
-        target_link_libraries(treerex lotane ${BASE_LIBS} ipasir${IPASIRSOLVER} ${SOLVERLIBS})
+        target_link_libraries(sibylsat-po lotane ${BASE_LIBS} ipasir${IPASIRSOLVER} ${SOLVERLIBS})
     else()
-        target_link_libraries(treerex lotane ${BASE_LIBS} ipasir${IPASIRSOLVER})
+        target_link_libraries(sibylsat-po lotane ${BASE_LIBS} ipasir${IPASIRSOLVER})
     endif()
 endif()
 
@@ -114,7 +114,7 @@ execute_process(
 # Solver library
 
 add_custom_target(solverlib cd .. && cd ${IPASIRDIR}/${IPASIRSOLVER}/ && [ ! -f fetch_and_build.sh ] || bash fetch_and_build.sh)
-add_dependencies(treerex solverlib)
+add_dependencies(sibylsat-po solverlib)
 
 
 # Global debug flags

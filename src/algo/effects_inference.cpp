@@ -904,7 +904,7 @@ void EffectsInference::calculateAllMethodsPrecsAndEffs(std::vector<Method> &meth
         }
     }
 
-    printAllMethodPrecsAndEffs();
+    // printAllMethodPrecsAndEffs();
 
     Log::i("Done !\n");
     Log::i("Cleared caches.\n");

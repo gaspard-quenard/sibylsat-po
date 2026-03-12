@@ -57,12 +57,12 @@ void Parameters::setDefaults()
     setParam("wf", "0");      // output formula to f.cnf
     setParam("wp", "0");      // output plan to plan.txt
     setParam("pvn", "0");     // Print variable names
-    setParam("po", "0");      // Partial order encoding
-    setParam("mutex", "0");   // Use mutexes during the encoding (enabled by default)
+    setParam("po", "1");      // Partial order encoding
+    setParam("mutex", "1");   // Use mutexes during the encoding (enabled by default)
     setParam("precsEffs", "0"); // Compute and use preconditions and effects of methods
     setParam("nsp", "0");     // No split parameters
     setParam("removeMethodPrecAction", "0"); // Remove the special first subtask of the method which contains its preconditions and set instead the preconditions at the method level
-    setParam("sibylsat", "0"); // Use the sibylsat expansion
+    setParam("sibylsat", "1"); // Use the sibylsat expansion
 }
 
 void Parameters::printUsage()

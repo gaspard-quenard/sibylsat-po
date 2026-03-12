@@ -46,7 +46,7 @@ PATH_BENCHMARKS = [
 ]
 
 
-planner_config = "./build/treerex {domain_path} {problem_path} -po -sibylsat"
+planner_config = "./build/sibylsat-po {domain_path} {problem_path} -po -sibylsat"
 
 
 if __name__ == "__main__":
